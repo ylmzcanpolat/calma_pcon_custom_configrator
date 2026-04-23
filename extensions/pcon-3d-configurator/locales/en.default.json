@@ -1,0 +1,10 @@
+{
+  "configurator": {
+    "loading": "Loading 3D Configurator...",
+    "error": {
+      "no_article": "No pCon article number configured for this product.",
+      "load_failed": "Failed to load 3D Configurator. Please refresh the page.",
+      "init_failed": "Failed to initialize 3D Configurator."
+    }
+  }
+}

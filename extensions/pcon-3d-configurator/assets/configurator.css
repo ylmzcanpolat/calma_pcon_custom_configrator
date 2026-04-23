@@ -1,0 +1,321 @@
+/* pCon 3D Configurator — Base Styles */
+
+#pcon-root {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background-color: #fafafa;
+  border-radius: 8px;
+}
+
+/* Loading State */
+.pcon-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.pcon-loading__spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #e0e0e0;
+  border-top-color: #333;
+  border-radius: 50%;
+  animation: pcon-spin 0.8s linear infinite;
+}
+
+.pcon-loading__text {
+  font-size: 14px;
+  color: #666;
+  margin: 0;
+}
+
+@keyframes pcon-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Error State */
+.pcon-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  padding: 32px;
+  gap: 12px;
+  color: #666;
+}
+
+.pcon-error__icon {
+  color: #999;
+}
+
+.pcon-error__message {
+  font-size: 14px;
+  text-align: center;
+  margin: 0;
+  max-width: 320px;
+  line-height: 1.5;
+}
+
+/* ========================================
+   Main Layout: Viewer (left) + Sidebar (right)
+   ======================================== */
+.pcon-configurator {
+  display: flex;
+  gap: 0;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+}
+
+/* 3D Viewer Panel */
+.pcon-viewer {
+  position: relative;
+  flex: 1 1 0%;
+  min-width: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f5f5f5;
+}
+
+.pcon-viewer canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Sidebar Panel */
+.pcon-sidebar {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: #fff;
+  border-left: 1px solid #eee;
+}
+
+/* Price Display */
+.pcon-price {
+  background: #f8f8f8;
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #1a1a1a;
+  text-align: center;
+  border: 1px solid #eee;
+}
+
+/* Property Selector Panel */
+.pcon-properties {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pcon-prop-group {
+  background: #f8f8f8;
+  border-radius: 8px;
+  padding: 12px;
+  border: 1px solid #eee;
+}
+
+.pcon-prop-group__label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+.pcon-prop-group__options {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Option Buttons */
+.pcon-option-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 36px;
+  padding: 0 12px;
+  border: 2px solid #ddd;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.pcon-option-btn:hover {
+  border-color: #999;
+}
+
+.pcon-option-btn--active {
+  border-color: #333;
+  box-shadow: 0 0 0 1px #333;
+}
+
+.pcon-option-btn--disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Color Swatch Variant */
+.pcon-option-btn--color {
+  width: 36px;
+  padding: 0;
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.pcon-option-btn--color img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Loading overlay for property changes */
+.pcon-updating {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(245, 245, 245, 0.75);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  z-index: 10;
+  border-radius: 8px;
+}
+
+/* Circular progress spinner */
+.pcon-progress-spinner {
+  position: relative;
+  width: 72px;
+  height: 72px;
+}
+
+.pcon-progress-spinner__svg {
+  width: 100%;
+  height: 100%;
+  animation: pcon-progress-rotate 1.8s linear infinite;
+}
+
+@keyframes pcon-progress-rotate {
+  from { transform: rotate(-90deg); }
+  to { transform: rotate(270deg); }
+}
+
+.pcon-progress-spinner__track,
+.pcon-progress-spinner__fill {
+  fill: none;
+  stroke-width: 4;
+}
+
+.pcon-progress-spinner__track {
+  stroke: #e0e0e0;
+}
+
+.pcon-progress-spinner__fill {
+  stroke: #333;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.3s ease;
+}
+
+.pcon-progress-spinner__pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+}
+
+/* ========================================
+   Skeleton / Placeholder UI
+   ======================================== */
+.pcon-skeleton {
+  display: flex;
+  gap: 24px;
+  padding: 16px;
+  animation: pcon-pulse 1.5s ease-in-out infinite;
+}
+
+.pcon-skeleton__viewer {
+  flex: 2;
+  aspect-ratio: 4 / 3;
+  background: #f0f0f0;
+  border-radius: 8px;
+}
+
+.pcon-skeleton__sidebar {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pcon-skeleton__price {
+  height: 60px;
+  background: #f0f0f0;
+  border-radius: 8px;
+}
+
+.pcon-skeleton__props {
+  height: 80px;
+  background: #f0f0f0;
+  border-radius: 8px;
+}
+
+@keyframes pcon-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ========================================
+   Responsive: Stack vertically on mobile
+   ======================================== */
+@media (max-width: 768px) {
+  .pcon-configurator {
+    flex-direction: column;
+    aspect-ratio: auto;
+  }
+
+  .pcon-viewer {
+    aspect-ratio: 1 / 1;
+    width: 100%;
+  }
+
+  .pcon-sidebar {
+    flex: none;
+    overflow-y: visible;
+    border-left: none;
+    border-top: 1px solid #eee;
+    padding: 16px;
+  }
+
+  .pcon-skeleton {
+    flex-direction: column;
+  }
+
+  .pcon-skeleton__viewer {
+    aspect-ratio: 1 / 1;
+  }
+}

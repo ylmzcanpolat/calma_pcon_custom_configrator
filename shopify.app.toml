@@ -1,0 +1,74 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "aa6d9b285a09f0c70d7da390fa42f94e"
+name = "3D_test_app"
+application_url = "https://example.com"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2026-07"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "write_products,write_metaobjects,write_metaobject_definitions,write_app_proxy"
+
+[app_proxy]
+url = "/pcon-proxy"
+prefix = "apps"
+subpath = "pcon-configurator"
+
+[auth]
+redirect_urls = [ "https://example.com/api/auth" ]
+
+[product.metafields.app.pcon_article_number]
+type = "single_line_text_field"
+name = "pCon Article Number"
+description = "pCon EAIWS article number for 3D configurator"
+
+  [product.metafields.app.pcon_article_number.access]
+  admin = "merchant_read_write"
+  storefront = "public_read"
+
+[product.metafields.app.pcon_manufacturer_id]
+type = "single_line_text_field"
+name = "pCon Manufacturer ID"
+description = "pCon manufacturer identifier"
+
+  [product.metafields.app.pcon_manufacturer_id.access]
+  admin = "merchant_read_write"
+  storefront = "public_read"
+
+[product.metafields.app.demo_info]
+type = "single_line_text_field"
+name = "Demo Source Info"
+description = "Tracks products created by the Shopify app template for development"
+
+  [product.metafields.app.demo_info.access]
+  admin = "merchant_read_write"
+
+[metaobjects.app.example]
+name = "Example"
+description = "An example metaobject definition created by this template"
+
+  [metaobjects.app.example.access]
+  admin = "merchant_read_write"
+
+[metaobjects.app.example.fields.title]
+name = "Title"
+type = "single_line_text_field"
+required = true
+
+[metaobjects.app.example.fields.description]
+name = "Description"
+type = "multi_line_text_field"
