@@ -126,7 +126,7 @@ export async function warmArticle({
         const price =
           articleData.pdSalesPrice ?? articleData.pdPurchasePrice ?? 0;
 
-        const properties = mapProperties(articleData, choiceLists);
+        const properties = await mapProperties(articleData, choiceLists);
         const localGltf = await cacheGltf(gltfUrl);
 
         await cacheSet(initKey, {
@@ -162,7 +162,7 @@ export async function warmArticle({
     const currency =
       articleData.currency || (await session.basket.getCurrency());
 
-    const properties = mapProperties(articleData, choiceLists);
+    const properties = await mapProperties(articleData, choiceLists);
     const baseProps = {};
     for (const p of properties) {
       if (p.currentValue) baseProps[p.id] = p.currentValue;

@@ -50,6 +50,8 @@ const useConfiguratorStore = create((set, get) => ({
         return prop;
       });
 
+      properties = applyCustomIcons(properties, config.customIcons);
+
       set({
         gltfUrl: data.gltfUrl,
         price: data.price,
@@ -168,17 +170,32 @@ const useConfiguratorStore = create((set, get) => ({
 function mergeValidOptions(properties, validOptions) {
   if (!validOptions) return properties;
 
-  const optionMap = new Map();
+  const voMap = new Map();
   for (const vo of validOptions) {
-    optionMap.set(vo.id, vo.options);
+    const byValue = new Map();
+    for (const o of vo.options) {
+      byValue.set(o.value, o);
+    }
+    voMap.set(vo.id, byValue);
   }
 
   return properties.map((prop) => {
-    const newOptions = optionMap.get(prop.id);
-    if (!newOptions) return prop;
+    const byValue = voMap.get(prop.id);
+    if (!byValue) return prop;
+
+    const mergedOptions = prop.options.map((opt) => {
+      const vo = byValue.get(opt.value);
+      if (!vo) return { ...opt, available: false };
+      return {
+        ...opt,
+        available: vo.available,
+        label: vo.label ?? opt.label,
+      };
+    });
+
     return {
       ...prop,
-      options: newOptions,
+      options: mergedOptions,
     };
   });
 }
@@ -189,6 +206,45 @@ function syncCurrentToUrl(properties) {
     if (p.currentValue) map[p.id] = p.currentValue;
   }
   writeUrlProperties(map);
+}
+
+/**
+ * Override option icons with custom assets uploaded to the theme extension.
+ * Matching is label-based and locale-independent (DE + EN covered).
+ * Icon URLs are built via Liquid `asset_url` filter in configurator.liquid
+ * and exposed on `window.__pconCustomIcons`.
+ */
+function applyCustomIcons(properties, customIcons) {
+  if (!customIcons || typeof customIcons !== "object") return properties;
+
+  return properties.map((prop) => {
+    if (isSocketProperty(prop.label)) {
+      return { ...prop, options: overrideSocketIcons(prop.options, customIcons.socket) };
+    }
+    return prop;
+  });
+}
+
+function isSocketProperty(label) {
+  return /steckdose|socket/i.test(label || "");
+}
+
+function overrideSocketIcons(options, socketIcons) {
+  if (!socketIcons || !Array.isArray(options)) return options;
+
+  return options.map((opt) => {
+    const customIcon = matchSocketIcon(opt.label, socketIcons);
+    return customIcon ? { ...opt, icon: customIcon } : opt;
+  });
+}
+
+function matchSocketIcon(optLabel, map) {
+  const label = (optLabel || "").toLowerCase();
+  if (/german|deutsch/.test(label)) return map.german || null;
+  if (/multi|universal/.test(label)) return map.multi || null;
+  if (/swiss|schweiz/.test(label)) return map.swiss || null;
+  if (/\buk\b|british|britisch/.test(label)) return map.uk || null;
+  return null;
 }
 
 export default useConfiguratorStore;

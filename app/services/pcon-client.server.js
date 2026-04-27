@@ -1,6 +1,7 @@
 import "@easterngraphics/wcf/modules/polyfill/xmldom/index.js";
 import { EaiwsSession } from "@easterngraphics/wcf/modules/eaiws/index.js";
 import { InsertInfo } from "@easterngraphics/wcf/modules/eaiws/basket/index.js";
+import { mapProperties } from "./property-mapper.server.js";
 
 const GATEKEEPER_BASE_URL = "https://gatekeeper.eaiws.pcon-solutions.com/v2";
 const GATEKEEPER_ID = process.env.PCON_GATEKEEPER_ID || "";
@@ -129,7 +130,7 @@ class PconClient {
 
     const currency = articleData.currency || (await session.basket.getCurrency());
 
-    const properties = this._mapProperties(articleData, choiceLists);
+    const properties = await mapProperties(articleData, choiceLists);
 
     const price = articleData.pdSalesPrice ?? articleData.pdPurchasePrice ?? 0;
 
@@ -226,43 +227,6 @@ class PconClient {
     this.currentItemId = null;
   }
 
-  _mapProperties(articleData, choiceLists) {
-    if (!articleData.properties) return [];
-
-    const choiceMap = new Map();
-    for (const cl of choiceLists) {
-      choiceMap.set(`${cl.propClass}.${cl.propName}`, cl.values || []);
-    }
-
-    return articleData.properties
-      .filter((prop) => prop.visible)
-      .map((prop) => {
-        const key = `${prop.propClass}.${prop.propName}`;
-        const choices = choiceMap.get(key) || [];
-
-        let type = "text";
-        if (prop.choiceList && choices.length > 0) {
-          const hasIcons = choices.some((c) => c.smallIcon || c.largeIcon || c.image);
-          type = hasIcons ? "color" : "select";
-        }
-
-        return {
-          id: key,
-          propClass: prop.propClass,
-          propName: prop.propName,
-          label: prop.propText,
-          type,
-          editable: prop.editable,
-          options: choices.map((pv) => ({
-            value: pv.value,
-            label: pv.text,
-            icon: pv.smallIcon || pv.image || null,
-            available: pv.selectable !== false,
-          })),
-          currentValue: prop.value?.value ?? "",
-        };
-      });
-  }
 }
 
 let instance = null;

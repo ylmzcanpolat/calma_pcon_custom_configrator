@@ -19,7 +19,11 @@ function Configurator({ config }) {
 }
 
 window.__pconConfiguratorInit = function (root, config) {
+  const mergedConfig = {
+    ...config,
+    customIcons: window.__pconCustomIcons || {},
+  };
   root.innerHTML = "";
   const reactRoot = createRoot(root);
-  reactRoot.render(<Configurator config={config} />);
+  reactRoot.render(<Configurator config={mergedConfig} />);
 };

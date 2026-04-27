@@ -3,6 +3,17 @@
 <link rel="dns-prefetch" href="https://s2.eaiws.pcon-solutions.com">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 
+<script>
+  window.__pconCustomIcons = {
+    socket: {
+      german: {{ 'germany_type_new.png' | asset_url | json }},
+      multi: {{ 'multi_type_new.png' | asset_url | json }},
+      swiss: {{ 'swiss_type_new.png' | asset_url | json }},
+      uk: {{ 'uk_type_new.png' | asset_url | json }}
+    }
+  };
+</script>
+
 <div
   id="pcon-root"
   data-article-number="{{ product.metafields['$app'].pcon_article_number.value }}"
