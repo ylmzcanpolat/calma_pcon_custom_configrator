@@ -22,6 +22,7 @@ const useConfiguratorStore = create((set, get) => ({
   articleNumber: "",
   manufacturerId: "",
   itemId: null,
+  customIcons: {},
 
   async initialize(config) {
     set({
@@ -29,6 +30,7 @@ const useConfiguratorStore = create((set, get) => ({
       articleNumber: config.articleNumber,
       manufacturerId: config.manufacturerId,
       currency: config.currency,
+      customIcons: config.customIcons || {},
       loading: true,
       error: null,
     });
@@ -50,7 +52,7 @@ const useConfiguratorStore = create((set, get) => ({
         return prop;
       });
 
-      properties = applyCustomIcons(properties, config.customIcons);
+      properties = applyCustomIcons(properties, get().customIcons);
 
       set({
         gltfUrl: data.gltfUrl,
@@ -69,7 +71,7 @@ const useConfiguratorStore = create((set, get) => ({
         gltfUrl: data.gltfUrl,
         price: data.price,
         currency: data.currency || config.currency,
-        validOptions: null,
+        properties,
       });
 
       const hasUrlOverrides = Object.keys(urlProps).length > 0;
@@ -84,14 +86,13 @@ const useConfiguratorStore = create((set, get) => ({
   },
 
   async applyUrlProperties(urlProps) {
-    const { proxyBase, itemId, articleNumber, manufacturerId } = get();
+    const { proxyBase, itemId, articleNumber, manufacturerId, properties: prevProperties, customIcons } = get();
     set({ updating: true });
 
     try {
       const data = await updateProperties(proxyBase, urlProps, itemId, articleNumber, manufacturerId);
-      const { properties } = get();
-
-      const merged = mergeValidOptions(properties, data.validOptions);
+      console.log("data", data);
+      const merged = mergeProperties(prevProperties, data, customIcons);
 
       set({
         gltfUrl: data.gltfUrl,
@@ -106,7 +107,7 @@ const useConfiguratorStore = create((set, get) => ({
   },
 
   async updateProperty(key, value) {
-    const { proxyBase, itemId, properties, articleNumber, manufacturerId } = get();
+    const { proxyBase, itemId, properties, articleNumber, manufacturerId, customIcons } = get();
 
     const optimistic = properties.map((p) =>
       p.id === key ? { ...p, currentValue: value } : p,
@@ -123,7 +124,7 @@ const useConfiguratorStore = create((set, get) => ({
     const cacheKey = buildPropsCacheKey(allProps);
     const cached = responseCache.get(cacheKey);
     if (cached) {
-      const merged = mergeValidOptions(optimistic, cached.validOptions);
+      const merged = mergeProperties(optimistic, cached, customIcons);
       set({
         gltfUrl: cached.gltfUrl,
         price: cached.price,
@@ -141,10 +142,11 @@ const useConfiguratorStore = create((set, get) => ({
         gltfUrl: data.gltfUrl,
         price: data.price,
         currency: data.currency,
+        properties: data.properties,
         validOptions: data.validOptions,
       });
 
-      const merged = mergeValidOptions(optimistic, data.validOptions);
+      const merged = mergeProperties(optimistic, data, customIcons);
 
       set({
         gltfUrl: data.gltfUrl,
@@ -167,7 +169,29 @@ const useConfiguratorStore = create((set, get) => ({
   },
 }));
 
-function mergeValidOptions(properties, validOptions) {
+/**
+ * Merge an update response into the current property list.
+ *
+ * EAIWS authoritatively dictates which properties are visible/contextual at
+ * any given configuration; on each `setPropertyValue` it returns the full
+ * post-update property snapshot (`data.properties`) — including label, type,
+ * options, currentValue, icon URLs and crucially the *set* of properties
+ * (some may appear or disappear depending on context, e.g. PRIZ_TIPI when
+ * BOLGE = "-" vs "NA"). We therefore replace the local list with the server
+ * snapshot and re-apply storefront-only customizations (custom icons).
+ *
+ * For backwards compatibility with cache entries written by the previous
+ * `validOptions`-based protocol, we fall back to a partial merge that only
+ * updates `available`/`label` on existing options.
+ */
+function mergeProperties(prevProperties, data, customIcons) {
+  if (Array.isArray(data?.properties)) {
+    return applyCustomIcons(data.properties, customIcons);
+  }
+  return legacyMergeValidOptions(prevProperties, data?.validOptions);
+}
+
+function legacyMergeValidOptions(properties, validOptions) {
   if (!validOptions) return properties;
 
   const voMap = new Map();
@@ -208,42 +232,148 @@ function syncCurrentToUrl(properties) {
   writeUrlProperties(map);
 }
 
-/**
- * Override option icons with custom assets uploaded to the theme extension.
- * Matching is label-based and locale-independent (DE + EN covered).
- * Icon URLs are built via Liquid `asset_url` filter in configurator.liquid
- * and exposed on `window.__pconCustomIcons`.
- */
+/* ------------------------------------------------------------------ *
+ * Custom icon overrides
+ *
+ * EAIWS does not always ship icons (or the right icons) for every
+ * choice-list value. We layer two storefront-side overrides on top of
+ * the server response:
+ *
+ *   1. `socket` — locale-independent socket-type icons matched via
+ *      property ID + value/label keywords (DE/EN/TR).
+ *   2. `contextual` — icons that depend on the current value of another
+ *      property, e.g. `MT_TEXT.Meta_Dimension`. The mapping is keyed by
+ *      `dimensionValue → propertyId → optionValue → iconKey`, so adding
+ *      a new dimension/property is a one-line change.
+ *
+ * Whenever at least one option of a property ends up with an icon, the
+ * property `type` is upgraded to "color" so PropertyCollapsible renders
+ * swatches instead of plain chips.
+ *
+ * Asset URLs are produced by Liquid (`asset_url | json`) in
+ * `configurator.liquid` and exposed on `window.__pconCustomIcons`.
+ * ------------------------------------------------------------------ */
+
+const SOCKET_PROPERTY_IDS = new Set(["OI_NONE_PROPCLASS.PRIZ_TIPI"]);
+
+const SOCKET_ICON_PATTERNS = [
+  { keys: ["german", "deutsch", "alman"], iconKey: "german" },
+  { keys: ["multi", "universal", "coklu", "çoklu"], iconKey: "multi" },
+  { keys: ["swiss", "schweiz", "isvicre", "isviçre"], iconKey: "swiss" },
+  { keys: ["uk", "british", "britisch", "ingiliz"], iconKey: "uk" },
+  { keys: ["us", "american", "amerikan", "amerika"], iconKey: "american" },
+];
+
+const DIMENSION_PROPERTY_ID = "MT_TEXT.Meta_Dimension";
+
+// Map: dimension value → { propertyId → { optionValue → iconKey } }
+const DIMENSION_DEPENDENT_ICONS = {
+  m_100_140: {
+    "MEDIAWALL.MEDIAWALL": {
+      "false": "withoutMediawall",
+      "true": "withMediawall",
+    },
+    "KOLTUK_4U.KOLTUK": {
+      "false": "forUWithoutSofa",
+      "true": "forUWithSofa",
+    },
+  },
+  m_100_220: {
+    "KOLTUK.KOLTUK": {
+      "false": "mediumLargeForAllWithoutSofa",
+      "true": "mediumLargeForAllWithSofa",
+    },
+  },
+  m_144_220: {
+    "KOLTUK_L.KOLTUK": {
+      "false": "mediumLargeForAllWithoutSofa",
+      "true": "mediumLargeForAllWithSofa",
+    },
+  },
+  m_188_220ALL: {
+    "MASA_FA.MASA": {
+      "false": "mediumLargeForAllWithoutSofa",
+      "true": "mediumLargeForAllWithSofa",
+    },
+  },
+};
+
 function applyCustomIcons(properties, customIcons) {
   if (!customIcons || typeof customIcons !== "object") return properties;
 
+  let result = applySocketIcons(properties, customIcons.socket);
+  result = applyContextualIcons(result, customIcons.contextual);
+  return result;
+}
+
+function applySocketIcons(properties, socketIcons) {
+  if (!socketIcons) return properties;
+
   return properties.map((prop) => {
-    if (isSocketProperty(prop.label)) {
-      return { ...prop, options: overrideSocketIcons(prop.options, customIcons.socket) };
-    }
-    return prop;
+    if (!isSocketProperty(prop)) return prop;
+
+    const newOptions = overrideSocketIcons(prop.options, socketIcons);
+    const hasIcon = newOptions.some((o) => o.icon);
+
+    return {
+      ...prop,
+      type: hasIcon ? "color" : prop.type,
+      options: newOptions,
+    };
   });
 }
 
-function isSocketProperty(label) {
-  return /steckdose|socket/i.test(label || "");
+function applyContextualIcons(properties, contextual) {
+  if (!contextual) return properties;
+
+  const dimensionProp = properties.find((p) => p.id === DIMENSION_PROPERTY_ID);
+  const dimensionValue = dimensionProp?.currentValue;
+  if (!dimensionValue) return properties;
+
+  const ruleSet = DIMENSION_DEPENDENT_ICONS[dimensionValue];
+  if (!ruleSet) return properties;
+
+  return properties.map((prop) => {
+    const optionRules = ruleSet[prop.id];
+    if (!optionRules) return prop;
+
+    const newOptions = prop.options.map((opt) => {
+      const iconKey = optionRules[opt.value];
+      const url = iconKey ? contextual[iconKey] : null;
+      return url ? { ...opt, icon: url } : opt;
+    });
+
+    const hasIcon = newOptions.some((o) => o.icon);
+    return {
+      ...prop,
+      type: hasIcon ? "color" : prop.type,
+      options: newOptions,
+    };
+  });
+}
+
+function isSocketProperty(prop) {
+  if (!prop) return false;
+  if (SOCKET_PROPERTY_IDS.has(prop.id)) return true;
+  return /steckdose|socket|priz/i.test(prop.label || "");
 }
 
 function overrideSocketIcons(options, socketIcons) {
   if (!socketIcons || !Array.isArray(options)) return options;
 
   return options.map((opt) => {
-    const customIcon = matchSocketIcon(opt.label, socketIcons);
+    const customIcon = matchSocketIcon(opt, socketIcons);
     return customIcon ? { ...opt, icon: customIcon } : opt;
   });
 }
 
-function matchSocketIcon(optLabel, map) {
-  const label = (optLabel || "").toLowerCase();
-  if (/german|deutsch/.test(label)) return map.german || null;
-  if (/multi|universal/.test(label)) return map.multi || null;
-  if (/swiss|schweiz/.test(label)) return map.swiss || null;
-  if (/\buk\b|british|britisch/.test(label)) return map.uk || null;
+function matchSocketIcon(opt, map) {
+  const haystack = `${opt.value || ""} ${opt.label || ""}`.toLowerCase();
+  for (const { keys, iconKey } of SOCKET_ICON_PATTERNS) {
+    if (keys.some((k) => haystack.includes(k))) {
+      return map[iconKey] || null;
+    }
+  }
   return null;
 }
 

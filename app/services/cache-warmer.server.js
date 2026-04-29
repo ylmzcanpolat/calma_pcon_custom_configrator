@@ -70,7 +70,7 @@ export function warmCacheInBackground(articleNumber, manufacturerId, properties)
               price: data.price,
               gltfUrl: localGltfUrl,
               originalGltfUrl: data.gltfUrl,
-              validOptions: data.validOptions,
+              properties: data.properties,
               currency: data.currency,
             });
 

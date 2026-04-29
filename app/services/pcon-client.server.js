@@ -10,6 +10,28 @@ const SESSION_LOCALE = process.env.PCON_LOCALE || "tr_TR";
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAY_MS = 2000;
 
+/**
+ * EAIWS bazı durumlarda kendi döndürdüğü dahili/bağımlı değerleri
+ * (örn. Numeric/Length tipi property için "_5" gibi placeholder değerler)
+ * `setPropertyValue` çağrısında geri kabul etmez ve Java tarafında
+ * `NumberFormatException` ya da "unknown property" hatası fırlatır.
+ *
+ * Bu hatalar tek bir property için lokal hatadır; tüm güncelleme akışını
+ * iptal etmemeliyiz. Bu yardımcı, döngü içinde sessizce atlanması
+ * gereken hata mesajlarını tespit eder.
+ */
+export function isSkippablePropertyError(err) {
+  const message = err?.message || "";
+  return (
+    message.includes("unknown property") ||
+    message.includes("UnknownPropertyException") ||
+    message.includes("value not a number") ||
+    message.includes("NumberFormatException") ||
+    message.includes("value out of range") ||
+    message.includes("value not allowed")
+  );
+}
+
 class PconClient {
   constructor() {
     this.session = null;
@@ -36,7 +58,7 @@ class PconClient {
     }
 
     const url = `${GATEKEEPER_BASE_URL}/session/${GATEKEEPER_ID}`;
-    const body = { locale: SESSION_LOCALE };
+    const body = { locale: "en" };
 
     const response = await fetch(url, {
       method: "POST",
@@ -52,6 +74,8 @@ class PconClient {
     }
 
     const data = await response.json();
+
+    console.log("data", data);
 
     return {
       server: data.server,
@@ -76,6 +100,7 @@ class PconClient {
           gkSession.sessionId,
           keepAliveMs,
         );
+        await this.session.basket.setLanguages("en");
 
         if (connected) {
           console.log(`[PconClient] Connected. Session ID: ${this.session.sessionId}`);
@@ -121,6 +146,7 @@ class PconClient {
     });
 
     const choiceLists = await session.basket.getAllChoiceLists(itemId, {
+      fetchCatalogImage: true,
       enableBooleanPropType: true,
     });
 
@@ -147,7 +173,7 @@ class PconClient {
     };
   }
 
-  async setPropertyValue(itemId, properties) {
+  async setPropertyValue(itemId, propertyList) {
     const session = await this.ensureSession();
     const targetItemId = itemId || this.currentItemId;
 
@@ -155,7 +181,11 @@ class PconClient {
       throw new Error("No active article item. Call getArticleData first.");
     }
 
-    for (const { propClass, propName, value } of properties) {
+    for (const { propClass, propName, value } of propertyList) {
+      if (value === null || value === undefined || value === "") {
+        continue;
+      }
+
       try {
         await session.basket.setPropertyValue(
           targetItemId,
@@ -164,7 +194,10 @@ class PconClient {
           value,
         );
       } catch (err) {
-        if (err.message?.includes("unknown property") || err.message?.includes("UnknownPropertyException")) {
+        if (isSkippablePropertyError(err)) {
+          console.warn(
+            `[PconClient] Skipping property ${propClass}.${propName}=${value}: ${err.message}`,
+          );
           continue;
         }
         throw err;
@@ -172,11 +205,16 @@ class PconClient {
     }
 
     const articleData = await session.basket.getArticleData(targetItemId, {
+      fetchCatalogImage: true,
+      fetchCatalogIcon: true,
       enableBooleanPropType: true,
     });
 
     const choiceLists = await session.basket.getAllChoiceLists(targetItemId, {
+      fetchCatalogImage: true,
       enableBooleanPropType: true,
+      HighResPropValueIcons: true,
+      FetchPropValueImages: true,
     });
 
     const gltfUrl = await session.basket.getExportedGeometry(targetItemId, [
@@ -186,19 +224,12 @@ class PconClient {
     const currency = articleData.currency || (await session.basket.getCurrency());
     const price = articleData.pdSalesPrice ?? articleData.pdPurchasePrice ?? 0;
 
-    const validOptions = choiceLists.map((cl) => ({
-      id: `${cl.propClass}.${cl.propName}`,
-      options: (cl.values || []).map((pv) => ({
-        value: pv.value,
-        label: pv.text,
-        available: pv.selectable !== false,
-      })),
-    }));
+    const properties = await mapProperties(articleData, choiceLists);
 
     return {
       price,
       gltfUrl,
-      validOptions,
+      properties,
       currency,
     };
   }

@@ -21,6 +21,8 @@ export async function action({ request }) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  /* console.log("body", body); */
+
   const { properties, itemId, articleNumber } = body;
 
   if (!properties || typeof properties !== "object") {
@@ -70,7 +72,7 @@ export async function action({ request }) {
       price: data.price,
       gltfUrl: data.gltfUrl,
       originalGltfUrl: data.gltfUrl,
-      validOptions: data.validOptions,
+      properties: data.properties,
       currency: data.currency,
     };
 

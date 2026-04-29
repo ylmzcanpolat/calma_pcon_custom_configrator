@@ -8,6 +8,7 @@ import {
 } from "./redis-client.server.js";
 import { cacheGltf } from "./gltf-cache.server.js";
 import { mapProperties } from "./property-mapper.server.js";
+import { isSkippablePropertyError } from "./pcon-client.server.js";
 
 const GATEKEEPER_URL = "https://gatekeeper.eaiws.pcon-solutions.com/v2";
 const GATEKEEPER_ID = process.env.PCON_GATEKEEPER_ID || "";
@@ -117,6 +118,7 @@ export async function warmArticle({
             enableBooleanPropType: true,
           }),
           session.basket.getAllChoiceLists(itemId, {
+            fetchCatalogImage: true,
             enableBooleanPropType: true,
           }),
           session.basket.getExportedGeometry(itemId, ["format=GLTF"]),
@@ -156,6 +158,7 @@ export async function warmArticle({
         enableBooleanPropType: true,
       }),
       session.basket.getAllChoiceLists(itemId, {
+        fetchCatalogImage: true,
         enableBooleanPropType: true,
       }),
     ]);
@@ -381,6 +384,10 @@ async function warmCombinations({
           );
 
           for (const { propClass, propName, value } of propertyList) {
+            if (value === null || value === undefined || value === "") {
+              continue;
+            }
+
             try {
               await session.basket.setPropertyValue(
                 itemId,
@@ -389,10 +396,7 @@ async function warmCombinations({
                 value,
               );
             } catch (propErr) {
-              if (
-                propErr.message?.includes("unknown property") ||
-                propErr.message?.includes("UnknownPropertyException")
-              ) {
+              if (isSkippablePropertyError(propErr)) {
                 continue;
               }
               throw propErr;
@@ -401,9 +405,11 @@ async function warmCombinations({
 
           const [updatedData, updatedChoices, updatedGltf] = await Promise.all([
             session.basket.getArticleData(itemId, {
+              fetchCatalogImage: true,
               enableBooleanPropType: true,
             }),
             session.basket.getAllChoiceLists(itemId, {
+              fetchCatalogImage: true,
               enableBooleanPropType: true,
             }),
             session.basket.getExportedGeometry(itemId, ["format=GLTF"]),
@@ -412,20 +418,16 @@ async function warmCombinations({
           const updatedPrice =
             updatedData.pdSalesPrice ?? updatedData.pdPurchasePrice ?? 0;
 
-          const validOptions = updatedChoices.map((cl) => ({
-            id: `${cl.propClass}.${cl.propName}`,
-            options: (cl.values || []).map((pv) => ({
-              value: pv.value,
-              label: pv.text,
-              available: pv.selectable !== false,
-            })),
-          }));
+          const updatedProperties = await mapProperties(
+            updatedData,
+            updatedChoices,
+          );
 
           await cacheSet(combo.cacheKey, {
             price: updatedPrice,
             gltfUrl: updatedLocalGltf,
             originalGltfUrl: updatedGltf,
-            validOptions,
+            properties: updatedProperties,
             currency,
           });
 

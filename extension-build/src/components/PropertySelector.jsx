@@ -4,10 +4,12 @@ import useConfiguratorStore from "../store/configurator-store.js";
 export default function PropertySelector() {
   const properties = useConfiguratorStore((s) => s.properties);
   const updateProperty = useConfiguratorStore((s) => s.updateProperty);
+  console.log("ahjvşadfjvaşvjadbvşjvbşadfkjvbaşdvjbadfşvjbadvşj")
 
   const editableProps = properties.filter((p) => p.editable && p.options.length > 0);
 
   if (editableProps.length === 0) return null;
+  console.log("editableProps", editableProps);
 
   return (
     <div className="pcon-properties">
