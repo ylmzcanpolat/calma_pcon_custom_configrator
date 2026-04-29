@@ -19,6 +19,35 @@
       forUWithoutSofa: {{ 'forU_without_sofa_new.png' | asset_url | json }},
       mediumLargeForAllWithSofa: {{ 'medium_large_forAll_with_sofa_new.png' | asset_url | json }},
       mediumLargeForAllWithoutSofa: {{ 'medium_large_forAll_without_sofa_new.png' | asset_url | json }}
+    },
+    variantPicker: {
+      {%- for i in (1..25) -%}
+        {%- assign code_key = 'variant_picker_code_1_' | append: i -%}
+        {%- assign image_key = 'variant_picker_image_1_' | append: i -%}
+        {%- assign code = settings[code_key] -%}
+        {%- assign image = settings[image_key] -%}
+        {%- if code != blank and image != blank -%}
+          {{ code | json }}: {{ image | image_url: width: 96 | json }},
+        {%- endif -%}
+      {%- endfor -%}
+      {%- for i in (1..25) -%}
+        {%- assign code_key = 'variant_picker_code_2_' | append: i -%}
+        {%- assign image_key = 'variant_picker_image_2_' | append: i -%}
+        {%- assign code = settings[code_key] -%}
+        {%- assign image = settings[image_key] -%}
+        {%- if code != blank and image != blank -%}
+          {{ code | json }}: {{ image | image_url: width: 96 | json }},
+        {%- endif -%}
+      {%- endfor -%}
+      {%- for i in (51..110) -%}
+        {%- assign code_key = 'variant_picker_code_' | append: i -%}
+        {%- assign image_key = 'variant_picker_image_' | append: i -%}
+        {%- assign code = settings[code_key] -%}
+        {%- assign image = settings[image_key] -%}
+        {%- if code != blank and image != blank -%}
+          {{ code | json }}: {{ image | image_url: width: 96 | json }},
+        {%- endif -%}
+      {%- endfor -%}
     }
   };
 </script>

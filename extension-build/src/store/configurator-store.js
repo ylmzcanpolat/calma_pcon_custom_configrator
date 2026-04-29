@@ -236,21 +236,24 @@ function syncCurrentToUrl(properties) {
  * Custom icon overrides
  *
  * EAIWS does not always ship icons (or the right icons) for every
- * choice-list value. We layer two storefront-side overrides on top of
+ * choice-list value. We layer three storefront-side sources on top of
  * the server response:
  *
- *   1. `socket` — locale-independent socket-type icons matched via
- *      property ID + value/label keywords (DE/EN/TR).
- *   2. `contextual` — icons that depend on the current value of another
- *      property, e.g. `MT_TEXT.Meta_Dimension`. The mapping is keyed by
- *      `dimensionValue → propertyId → optionValue → iconKey`, so adding
- *      a new dimension/property is a one-line change.
+ *   1. `variantPicker` — *fallback only* lookup keyed by `option.value`.
+ *      Mirrors the merchant's existing theme setup ("Variant picker
+ *      images"): up to 110 `variant_picker_code_*` / `variant_picker_image_*`
+ *      slots maintained in theme settings. Applied only when the option
+ *      has no icon yet, so a real EAIWS icon (when present) always wins.
+ *   2. `socket` — locale-independent socket-type icons matched via
+ *      property ID + value/label keywords (DE/EN/TR). Forced override.
+ *   3. `contextual` — icons that depend on the current value of another
+ *      property, e.g. `MT_TEXT.Meta_Dimension`. Forced override.
  *
  * Whenever at least one option of a property ends up with an icon, the
  * property `type` is upgraded to "color" so PropertyCollapsible renders
  * swatches instead of plain chips.
  *
- * Asset URLs are produced by Liquid (`asset_url | json`) in
+ * Asset URLs are produced by Liquid (`asset_url`/`image_url`) in
  * `configurator.liquid` and exposed on `window.__pconCustomIcons`.
  * ------------------------------------------------------------------ */
 
@@ -301,9 +304,63 @@ const DIMENSION_DEPENDENT_ICONS = {
 function applyCustomIcons(properties, customIcons) {
   if (!customIcons || typeof customIcons !== "object") return properties;
 
-  let result = applySocketIcons(properties, customIcons.socket);
+  // Order matters: variant-picker is a *fallback* (only fills empty
+  // icons), so it must run before the forced overrides — otherwise a
+  // socket/contextual icon could later be overwritten.
+  let result = applyVariantPickerIcons(properties, customIcons.variantPicker);
+  result = applySocketIcons(result, customIcons.socket);
   result = applyContextualIcons(result, customIcons.contextual);
   return result;
+}
+
+let variantPickerLookup = null;
+let variantPickerSource = null;
+
+function getVariantPickerLookup(variantPicker) {
+  if (variantPickerSource === variantPicker && variantPickerLookup) {
+    return variantPickerLookup;
+  }
+
+  variantPickerSource = variantPicker;
+  variantPickerLookup = new Map();
+
+  if (variantPicker && typeof variantPicker === "object") {
+    for (const [code, url] of Object.entries(variantPicker)) {
+      if (!code || !url) continue;
+      variantPickerLookup.set(normalizeCode(code), url);
+    }
+  }
+
+  return variantPickerLookup;
+}
+
+function normalizeCode(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+}
+
+function applyVariantPickerIcons(properties, variantPicker) {
+  const lookup = getVariantPickerLookup(variantPicker);
+  if (lookup.size === 0) return properties;
+
+  return properties.map((prop) => {
+    let touched = false;
+    const newOptions = prop.options.map((opt) => {
+      if (opt.icon) return opt;
+      const url = lookup.get(normalizeCode(opt.value));
+      if (!url) return opt;
+      touched = true;
+      return { ...opt, icon: url };
+    });
+
+    if (!touched) return prop;
+    return {
+      ...prop,
+      type: "color",
+      options: newOptions,
+    };
+  });
 }
 
 function applySocketIcons(properties, socketIcons) {
