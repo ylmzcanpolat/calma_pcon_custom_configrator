@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import { initArticle, updateProperties } from "../utils/api.js";
 import { readUrlProperties, writeUrlProperties } from "../utils/url-sync.js";
+import {
+  postCartAdd,
+  generateRequestId,
+  generateUUID,
+  dispatchCartUpdateEvents,
+} from "../utils/cart.js";
 
 const responseCache = new Map();
 
@@ -24,6 +30,17 @@ const useConfiguratorStore = create((set, get) => ({
   itemId: null,
   customIcons: {},
 
+  // Cart state — addToCart için
+  cartProperties: null,
+  quantity: 1,
+  variantId: null,
+  routesRoot: "/",
+  addToCartLabel: "Add to Cart",
+  successAction: "drawer-event",
+  cartLoading: false,
+  cartError: null,
+  cartSuccess: false,
+
   async initialize(config) {
     set({
       proxyBase: config.proxyBase,
@@ -31,6 +48,10 @@ const useConfiguratorStore = create((set, get) => ({
       manufacturerId: config.manufacturerId,
       currency: config.currency,
       customIcons: config.customIcons || {},
+      variantId: config.variantId || null,
+      routesRoot: config.routesRoot || "/",
+      addToCartLabel: config.addToCartLabel || "Add to Cart",
+      successAction: config.successAction || "drawer-event",
       loading: true,
       error: null,
     });
@@ -60,6 +81,7 @@ const useConfiguratorStore = create((set, get) => ({
         currency: data.currency || config.currency,
         properties,
         itemId: data.itemId,
+        cartProperties: data.cartProperties || null,
         loading: false,
       });
 
@@ -72,6 +94,7 @@ const useConfiguratorStore = create((set, get) => ({
         price: data.price,
         currency: data.currency || config.currency,
         properties,
+        cartProperties: data.cartProperties || null,
       });
 
       const hasUrlOverrides = Object.keys(urlProps).length > 0;
@@ -91,7 +114,6 @@ const useConfiguratorStore = create((set, get) => ({
 
     try {
       const data = await updateProperties(proxyBase, urlProps, itemId, articleNumber, manufacturerId);
-      console.log("data", data);
       const merged = mergeProperties(prevProperties, data, customIcons);
 
       set({
@@ -99,6 +121,7 @@ const useConfiguratorStore = create((set, get) => ({
         price: data.price,
         currency: data.currency || get().currency,
         properties: merged,
+        cartProperties: data.cartProperties || get().cartProperties,
         updating: false,
       });
     } catch (err) {
@@ -130,6 +153,7 @@ const useConfiguratorStore = create((set, get) => ({
         price: cached.price,
         currency: cached.currency || get().currency,
         properties: merged,
+        cartProperties: cached.cartProperties || get().cartProperties,
         updating: false,
       });
       return;
@@ -144,6 +168,7 @@ const useConfiguratorStore = create((set, get) => ({
         currency: data.currency,
         properties: data.properties,
         validOptions: data.validOptions,
+        cartProperties: data.cartProperties || null,
       });
 
       const merged = mergeProperties(optimistic, data, customIcons);
@@ -153,10 +178,106 @@ const useConfiguratorStore = create((set, get) => ({
         price: data.price,
         currency: data.currency || get().currency,
         properties: merged,
+        cartProperties: data.cartProperties || get().cartProperties,
         updating: false,
       });
     } catch (err) {
       set({ properties, updating: false, error: err.message });
+    }
+  },
+
+  setQuantity(qty) {
+    const n = parseInt(qty, 10);
+    set({ quantity: Number.isFinite(n) && n >= 1 ? n : 1 });
+  },
+
+  setVariantId(variantId) {
+    if (!variantId) return;
+    const current = get().variantId;
+    if (String(current) === String(variantId)) return;
+    set({ variantId: String(variantId), cartError: null, cartSuccess: false });
+  },
+
+  resetCartFeedback() {
+    set({ cartError: null, cartSuccess: false });
+  },
+
+  /**
+   * Hazır `cartProperties`'i alır, dinamik alanları (request_id, basket_id,
+   * quantity) ekleyip Shopify cart/add.js'e POST atar. Tema iframe'inin
+   * gönderdiği body ile birebir uyumlu.
+   *
+   * Başarısızlıkta `cartError` set edilir, buton tekrar tıklanabilir kalır.
+   * Başarıda `successAction` ayarına göre redirect / reload / drawer event
+   * tetiklenir.
+   */
+  async addToCart() {
+    const {
+      cartProperties,
+      quantity,
+      variantId,
+      routesRoot,
+      successAction,
+      cartLoading,
+      updating,
+      loading,
+    } = get();
+
+    if (cartLoading) return false;
+
+    if (loading || updating) {
+      set({ cartError: "Configuration is still loading. Please wait." });
+      return false;
+    }
+
+    if (!cartProperties) {
+      set({ cartError: "Configuration not ready. Please wait." });
+      return false;
+    }
+
+    if (!variantId) {
+      set({
+        cartError:
+          "Could not detect a product variant on this page. Please reload and try again.",
+      });
+      return false;
+    }
+
+    set({ cartLoading: true, cartError: null, cartSuccess: false });
+
+    const finalProperties = {
+      ...cartProperties,
+      _request_id: generateRequestId(),
+      _basket_id: generateUUID(),
+      _quantity: String(Math.max(1, parseInt(quantity, 10) || 1)),
+    };
+
+    const items = [
+      {
+        id: variantId,
+        quantity: Math.max(1, parseInt(quantity, 10) || 1),
+        properties: finalProperties,
+      },
+    ];
+
+    try {
+      const payload = await postCartAdd(routesRoot, items);
+      set({ cartLoading: false, cartSuccess: true });
+
+      if (successAction === "redirect") {
+        window.location.assign(routesRoot + "cart");
+      } else if (successAction === "reload") {
+        window.location.reload();
+      } else if (successAction === "drawer-event") {
+        dispatchCartUpdateEvents(payload);
+      }
+      return true;
+    } catch (err) {
+      set({
+        cartLoading: false,
+        cartError: err?.message || "Failed to add to cart",
+      });
+      return false;
     }
   },
 

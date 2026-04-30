@@ -1,4 +1,4 @@
-import { getSessionManager } from "./pcon-session-manager.server.js";
+import { getPconClient } from "./pcon-client.server.js";
 import { generateCacheKey, cacheGet, cacheSet } from "./redis-client.server.js";
 import { cacheGltf } from "./gltf-cache.server.js";
 
@@ -24,11 +24,11 @@ export function warmCacheInBackground(articleNumber, manufacturerId, properties)
   }
 
   setImmediate(async () => {
-    const manager = getSessionManager();
-    let client;
+    // PconClient singleton; tek mağaza low-traffic için yeterli. Yüksek
+    // eş zamanlılıkta currentItemId race olabileceği için gerçek bir
+    // session pool ileride implement edilebilir.
+    const client = getPconClient();
     try {
-      client = await manager.acquire();
-
       const initData = await client.getArticleData(articleNumber, manufacturerId);
       const itemId = initData.itemId;
 
@@ -72,6 +72,7 @@ export function warmCacheInBackground(articleNumber, manufacturerId, properties)
               originalGltfUrl: data.gltfUrl,
               properties: data.properties,
               currency: data.currency,
+              cartProperties: data.cartProperties || null,
             });
 
             warmed++;
@@ -87,7 +88,6 @@ export function warmCacheInBackground(articleNumber, manufacturerId, properties)
     } catch (err) {
       console.error(`[cache-warmer] Failed to start warming for ${articleNumber}:`, err.message);
     } finally {
-      if (client) manager.release(client);
       warmingInProgress.delete(warmKey);
     }
   });

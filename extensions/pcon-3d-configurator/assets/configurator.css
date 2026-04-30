@@ -386,6 +386,153 @@
 }
 
 /* ========================================
+   Add to Cart Section
+   ======================================== */
+.pcon-cart {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  position: sticky;
+  bottom: 0;
+}
+
+.pcon-cart__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pcon-cart__qty-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #888;
+}
+
+.pcon-cart__qty-control {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.pcon-cart__qty-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 36px;
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  font-weight: 500;
+  color: #1a1a1a;
+  cursor: pointer;
+  line-height: 1;
+  transition: background 0.15s;
+  padding: 0;
+}
+
+.pcon-cart__qty-step:hover:not(:disabled) {
+  background: #f3f3f3;
+}
+
+.pcon-cart__qty-step:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pcon-cart__qty-input {
+  width: 56px;
+  height: 36px;
+  border: none;
+  border-left: 1px solid #ddd;
+  border-right: 1px solid #ddd;
+  text-align: center;
+  font-size: 14px;
+  color: #1a1a1a;
+  background: #fff;
+  -moz-appearance: textfield;
+}
+
+.pcon-cart__qty-input::-webkit-outer-spin-button,
+.pcon-cart__qty-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.pcon-cart__qty-input:focus {
+  outline: none;
+  background: #f8f8f8;
+}
+
+.pcon-cart__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 12px 18px;
+  background: #1a1a1a;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  border: 1px solid #1a1a1a;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.pcon-cart__btn:hover:not(:disabled) {
+  background: #000;
+}
+
+.pcon-cart__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pcon-cart__btn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: pcon-spin 0.8s linear infinite;
+}
+
+.pcon-cart__error {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #b3261e;
+  background: #fdecea;
+  border: 1px solid #f5c2bd;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.pcon-cart__success {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #185c2c;
+  background: #e6f4ea;
+  border: 1px solid #b6dfc1;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+/* ========================================
    Skeleton / Placeholder UI
    ======================================== */
 .pcon-skeleton {

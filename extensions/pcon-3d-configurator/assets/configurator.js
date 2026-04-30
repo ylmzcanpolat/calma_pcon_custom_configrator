@@ -12,6 +12,10 @@
     currency: root.dataset.currency || "TRY",
     canvasHeight: parseInt(root.dataset.canvasHeight, 10) || 500,
     environmentPreset: root.dataset.environmentPreset || "studio",
+    variantId: root.dataset.variantId || "",
+    routesRoot: root.dataset.routesRoot || "/",
+    addToCartLabel: root.dataset.addToCartLabel || "Add to Cart",
+    successAction: root.dataset.successAction || "drawer-event",
   };
 
   if (!config.articleNumber) {

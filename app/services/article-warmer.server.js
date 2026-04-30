@@ -9,6 +9,7 @@ import {
 import { cacheGltf } from "./gltf-cache.server.js";
 import { mapProperties } from "./property-mapper.server.js";
 import { isSkippablePropertyError } from "./pcon-client.server.js";
+import { buildCartProperties } from "./cart-builder.server.js";
 
 const GATEKEEPER_URL = "https://gatekeeper.eaiws.pcon-solutions.com/v2";
 const GATEKEEPER_ID = process.env.PCON_GATEKEEPER_ID || "";
@@ -130,6 +131,7 @@ export async function warmArticle({
 
         const properties = await mapProperties(articleData, choiceLists);
         const localGltf = await cacheGltf(gltfUrl);
+        const cartProperties = buildCartProperties(articleData, choiceLists);
 
         await cacheSet(initKey, {
           price,
@@ -138,6 +140,7 @@ export async function warmArticle({
           properties,
           currency,
           itemId,
+          cartProperties,
         });
         stats.warmed++;
         stats.totalCombinations++;
@@ -422,6 +425,10 @@ async function warmCombinations({
             updatedData,
             updatedChoices,
           );
+          const updatedCartProperties = buildCartProperties(
+            updatedData,
+            updatedChoices,
+          );
 
           await cacheSet(combo.cacheKey, {
             price: updatedPrice,
@@ -429,6 +436,7 @@ async function warmCombinations({
             originalGltfUrl: updatedGltf,
             properties: updatedProperties,
             currency,
+            cartProperties: updatedCartProperties,
           });
 
           warmed++;

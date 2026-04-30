@@ -8,6 +8,7 @@ import { Html } from "@react-three/drei/web/Html";
 import Model from "./Model.jsx";
 import PriceDisplay from "./PriceDisplay.jsx";
 import PropertySelector from "./PropertySelector.jsx";
+import AddToCartButton from "./AddToCartButton.jsx";
 import useConfiguratorStore from "../store/configurator-store.js";
 
 class ModelErrorBoundary extends Component {
@@ -216,6 +217,7 @@ export default function ConfiguratorScene({ canvasHeight, environmentPreset }) {
       <div className="pcon-sidebar">
         <PriceDisplay />
         <PropertySelector />
+        <AddToCartButton />
       </div>
     </div>
   );

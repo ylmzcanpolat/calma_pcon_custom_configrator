@@ -6,7 +6,11 @@ import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 import { startCacheScheduler } from "./services/cache-scheduler.server";
 
-startCacheScheduler();
+// Multi-instance deployment'larda yalnızca bir replica'da cron çalışmalı.
+// Default davranış: scheduler açık. RUN_SCHEDULER=0 ile kapatılabilir.
+if (process.env.RUN_SCHEDULER !== "0") {
+  startCacheScheduler();
+}
 
 export const streamTimeout = 5000;
 

@@ -35,7 +35,10 @@ export async function action({ request }) {
   });
 
   const cached = await cacheGet(cacheKey);
-  if (cached) {
+  // Eski cache entry'leri (deploy öncesi yazılmış) `cartProperties` içermez.
+  // Bu durumda cache'i atlayıp tazeleme yolu izlenir; aksi halde Add to Cart
+  // butonu bu konfigürasyon için her zaman disabled kalır.
+  if (cached && cached.cartProperties) {
     return Response.json({
       ...cached,
       gltfUrl: cached.originalGltfUrl || cached.gltfUrl,
@@ -74,6 +77,7 @@ export async function action({ request }) {
       originalGltfUrl: data.gltfUrl,
       properties: data.properties,
       currency: data.currency,
+      cartProperties: data.cartProperties || null,
     };
 
     await cacheSet(cacheKey, result);

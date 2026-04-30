@@ -1,0 +1,68 @@
+# fly.toml app configuration file for nurus-3d-configurator
+# See https://fly.io/docs/reference/configuration/
+
+app = "nurus-3d-configurator"
+primary_region = "fra"
+kill_signal = "SIGINT"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  # Persistent volume içindeki SQLite DB (volume `/app/.cache`'e mount).
+  DATABASE_URL = "file:/app/.cache/db/prod.sqlite"
+  # Single instance kullanırken scheduler default açık.
+  RUN_SCHEDULER = "1"
+  # GLTF disk cache hard cap (MB). Volume büyüklüğünden küçük tutulmalı.
+  GLTF_CACHE_MAX_SIZE_MB = "5000"
+  PCON_EAIWS_URL = "https://eaiws.pcon-solutions.com"
+  PCON_LOCALE = "en_US"
+  CACHE_WARM_CRON = "0 3,15 * * *"
+  CACHE_WARM_CONCURRENCY = "2"
+  RATE_LIMIT_PER_MINUTE = "30"
+
+# Aşağıdaki secret'lar `fly secrets set` ile yüklenir, dosyaya YAZMA:
+#   SHOPIFY_API_KEY
+#   SHOPIFY_API_SECRET
+#   SCOPES
+#   SHOPIFY_APP_URL
+#   PCON_GATEKEEPER_ID
+#   REDIS_URL
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+# pcon_cache volume zaten oluşturuldu (vol_4583kmw6ln27nyx4, 10GB, fra).
+[[mounts]]
+  source = "pcon_cache"
+  destination = "/app/.cache"
+  initial_size = "10gb"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "2gb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[checks.http_alive]
+  type = "http"
+  port = 3000
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "30s"
+  method = "get"
+  path = "/auth/login"
+  protocol = "http"

@@ -2,6 +2,7 @@ import "@easterngraphics/wcf/modules/polyfill/xmldom/index.js";
 import { EaiwsSession } from "@easterngraphics/wcf/modules/eaiws/index.js";
 import { InsertInfo } from "@easterngraphics/wcf/modules/eaiws/basket/index.js";
 import { mapProperties } from "./property-mapper.server.js";
+import { buildCartProperties } from "./cart-builder.server.js";
 
 const GATEKEEPER_BASE_URL = "https://gatekeeper.eaiws.pcon-solutions.com/v2";
 const GATEKEEPER_ID = process.env.PCON_GATEKEEPER_ID || "";
@@ -160,12 +161,15 @@ class PconClient {
 
     const price = articleData.pdSalesPrice ?? articleData.pdPurchasePrice ?? 0;
 
+    const cartProperties = buildCartProperties(articleData, choiceLists);
+
     return {
       itemId,
       price,
       gltfUrl,
       properties,
       currency,
+      cartProperties,
       articleNumber: articleData.baseArticleNumber,
       manufacturerId: articleData.manufacturerId,
       seriesId: articleData.seriesId,
@@ -226,11 +230,14 @@ class PconClient {
 
     const properties = await mapProperties(articleData, choiceLists);
 
+    const cartProperties = buildCartProperties(articleData, choiceLists);
+
     return {
       price,
       gltfUrl,
       properties,
       currency,
+      cartProperties,
     };
   }
 

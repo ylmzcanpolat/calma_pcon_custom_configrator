@@ -22,7 +22,10 @@ export async function loader({ request }) {
   const cacheKey = generateCacheKey("init", { articleNumber, manufacturerId: manufacturerId || "" });
 
   const cached = await cacheGet(cacheKey);
-  if (cached) {
+  // Eski cache entry'lerinde `cartProperties` olmayabilir (deploy öncesi
+  // yazılmış). Eksikse cache'i atlayıp tazeleme yolu izleriz; aksi halde
+  // Add to Cart butonu o config için hep disabled kalır.
+  if (cached && cached.cartProperties) {
     return Response.json({
       ...cached,
       gltfUrl: cached.originalGltfUrl || cached.gltfUrl,
@@ -42,6 +45,7 @@ export async function loader({ request }) {
       properties: data.properties,
       currency: data.currency,
       itemId: data.itemId,
+      cartProperties: data.cartProperties || null,
     };
 
     await cacheSet(cacheKey, result);

@@ -1,0 +1,58 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+#
+# Bu dosya `shopify app config link --config production` ile
+# Partner Dashboard'daki "Nurus 3D Configurator prod" uygulamasına
+# bağlandı. `client_id` ve `name` Partner Dashboard'dan geliyor;
+# diğer alanları biz dolduruyoruz ve `shopify app deploy --config production`
+# ile Shopify'a senkronlayacağız.
+
+client_id = "ece15c15111bba4dd4c206817216b7eb"
+name = "Nurus 3D Configurator prod"
+application_url = "https://nurus-3d-configurator.fly.dev"
+embedded = true
+
+[build]
+# Production toml'u, dev tunnel URL'i ile yanlışlıkla ezilmesin diye false.
+automatically_update_urls_on_dev = false
+
+[webhooks]
+api_version = "2026-07"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "/webhooks/app/scopes_update"
+
+[access_scopes]
+scopes = "write_products,write_metaobjects,write_metaobject_definitions,write_app_proxy"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[app_proxy]
+url = "https://nurus-3d-configurator.fly.dev/pcon-proxy"
+prefix = "apps"
+subpath = "pcon-configurator"
+
+[auth]
+redirect_urls = [ "https://nurus-3d-configurator.fly.dev/api/auth" ]
+
+[product.metafields.app.pcon_article_number]
+type = "single_line_text_field"
+name = "pCon Article Number"
+description = "pCon EAIWS article number for 3D configurator"
+
+  [product.metafields.app.pcon_article_number.access]
+  admin = "merchant_read_write"
+  storefront = "public_read"
+
+[product.metafields.app.pcon_manufacturer_id]
+type = "single_line_text_field"
+name = "pCon Manufacturer ID"
+description = "pCon manufacturer identifier"
+
+  [product.metafields.app.pcon_manufacturer_id.access]
+  admin = "merchant_read_write"
+  storefront = "public_read"
