@@ -252,6 +252,57 @@ class PconClient {
     return session.basket.getExportedGeometry(targetItemId, ["format=GLTF"]);
   }
 
+  /**
+   * Cart-add anında çağrılır. Şu anki konfigürasyon için legacy middleware'in
+   * `finalProperties` body'sinde beklediği üç dinamik EAIWS asset URL'sini
+   * üretir:
+   *
+   *  - `obxUrl`         → `basket.copy([itemId], ...)` ile cut buffer'a alınmış
+   *                        OBX dosyası (legacy `_obx_url`). Aynı dosya
+   *                        `_reopen_url`'in `obx=` parametresinde de kullanılır.
+   *  - `attachmentUrl`  → `basket.getGeneratedImage(itemId, [...])` ile üretilen
+   *                        konfigürasyonun render edilmiş JPG'si (legacy
+   *                        `_attachment`).
+   *  - `articleImageUrl` → güncel `articleData.catalogImage` (session-bound;
+   *                        legacy `_article_image`). Stale catalog image
+   *                        cache'inden kaçınmak için her seferinde fresh
+   *                        çekilir.
+   *
+   * URL'ler EAIWS session'ına bağlıdır; session expire olunca geçersizleşir.
+   * Bu nedenle cache'lenmez, her cart-add'de yeniden üretilir.
+   */
+  async generateCartAssets(itemId) {
+    const session = await this.ensureSession();
+    const targetItemId = itemId || this.currentItemId;
+
+    if (!targetItemId) {
+      throw new Error("No active article item. Call getArticleData first.");
+    }
+
+    // copy() ve getGeneratedImage() basket üzerinde okuma operasyonlarıdır;
+    // paralel çalıştırarak round-trip latency'i yarıya iniyoruz.
+    // articleData'yı da paralel çekiyoruz ki güncel catalogImage URL'i
+    // (session-bound) elde edebilelim.
+    const [obxUrl, attachmentUrl, articleData] = await Promise.all([
+      session.basket.copy([targetItemId], null, null, {}),
+      session.basket.getGeneratedImage(targetItemId, [
+        "format=JPG",
+        "width=800",
+        "height=800",
+      ]),
+      session.basket.getArticleData(targetItemId, {
+        fetchCatalogImage: true,
+        enableBooleanPropType: true,
+      }),
+    ]);
+
+    return {
+      obxUrl: obxUrl || "",
+      attachmentUrl: attachmentUrl || "",
+      articleImageUrl: articleData?.catalogImage || "",
+    };
+  }
+
   async disconnect() {
     if (this.session?.isValid) {
       try {

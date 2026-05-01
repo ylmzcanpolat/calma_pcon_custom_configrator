@@ -1,63 +1,13 @@
 /**
  * Shopify cart helpers
  *
- * Cart `properties` objesi backend'de `cart-builder.server.js` tarafından
- * üretilir, ancak şu üç alan her cart-add'de yeniden hesaplanmalıdır:
- *
- *   - `_request_id`  → her sepete-ekleme için unique ID (PCON-XXXXXXXXXXXXXXXX)
- *   - `_basket_id`   → her sepete-ekleme için unique UUID
- *   - `_quantity`    → kullanıcının o anda seçtiği adet (string)
- *
- * Bu alanlar Redis cache'ine girmemeli; aksi halde aynı konfigürasyon
- * tekrar sepete eklendiğinde sahte bir aynı request_id ile gelir ve
- * downstream (CRM, sipariş işleme) uniqueness varsayımı kırılır.
+ * `cartProperties` payload'u (legacy `finalProperties` ile birebir uyumlu)
+ * backend'in `/api/pcon/cart-payload` endpoint'inde üretilir. `_request_id`,
+ * `_basket_id`, `_attachment`, `_obx_url`, `_reopen_url`, `_article_image`
+ * — hepsi server-side generate edilir; frontend bunları olduğu gibi
+ * Shopify `cart/add.js` body'sine gömer. Bu modül sadece HTTP wrapper'ı
+ * ve drawer cart event'lerini içerir.
  */
-
-const REQUEST_ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-const REQUEST_ID_LENGTH = 16;
-
-export function generateRequestId() {
-  let id = "PCON-";
-  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-    const buf = new Uint32Array(REQUEST_ID_LENGTH);
-    crypto.getRandomValues(buf);
-    for (let i = 0; i < REQUEST_ID_LENGTH; i++) {
-      id += REQUEST_ID_CHARS[buf[i] % REQUEST_ID_CHARS.length];
-    }
-  } else {
-    for (let i = 0; i < REQUEST_ID_LENGTH; i++) {
-      id += REQUEST_ID_CHARS[Math.floor(Math.random() * REQUEST_ID_CHARS.length)];
-    }
-  }
-  return id;
-}
-
-export function generateUUID() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  // RFC4122 v4 fallback
-  const buf = new Uint8Array(16);
-  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-    crypto.getRandomValues(buf);
-  } else {
-    for (let i = 0; i < 16; i++) buf[i] = Math.floor(Math.random() * 256);
-  }
-  buf[6] = (buf[6] & 0x0f) | 0x40;
-  buf[8] = (buf[8] & 0x3f) | 0x80;
-  const hex = Array.from(buf, (b) => b.toString(16).padStart(2, "0"));
-  return (
-    hex.slice(0, 4).join("") +
-    "-" +
-    hex.slice(4, 6).join("") +
-    "-" +
-    hex.slice(6, 8).join("") +
-    "-" +
-    hex.slice(8, 10).join("") +
-    "-" +
-    hex.slice(10, 16).join("")
-  );
-}
 
 /**
  * `cart/add.js` endpoint'inin tam URL'ini üretir. Multi-locale store'larda

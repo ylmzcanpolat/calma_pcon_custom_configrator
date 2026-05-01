@@ -65,7 +65,6 @@
   data-variant-id="{{ product.selected_or_first_available_variant.id }}"
   data-routes-root="{{ routes.root_url }}"
   data-add-to-cart-label="{{ block.settings.add_to_cart_label | escape }}"
-  data-success-action="{{ block.settings.success_action }}"
   style="width: 100%; min-height: {{ block.settings.canvas_height }}px;"
 >
   <div class="pcon-skeleton">
@@ -120,19 +119,6 @@
       "id": "add_to_cart_label",
       "label": "Add to Cart button label",
       "default": "Add to Cart"
-    },
-    {
-      "type": "select",
-      "id": "success_action",
-      "label": "After successful Add to Cart",
-      "info": "Drawer-event tetikler temada drawer cart varsa onu açar; redirect /cart sayfasına gider; reload sayfayı yeniler.",
-      "options": [
-        { "value": "drawer-event", "label": "Dispatch drawer cart events" },
-        { "value": "redirect", "label": "Redirect to /cart" },
-        { "value": "reload", "label": "Reload page" },
-        { "value": "none", "label": "Do nothing (silent)" }
-      ],
-      "default": "drawer-event"
     }
   ]
 }

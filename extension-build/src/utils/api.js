@@ -1,4 +1,7 @@
 const DEFAULT_TIMEOUT = 15000;
+// Cart payload endpoint EAIWS'te 2-3 round-trip yapar (setProperties + asset
+// gen); GLTF üreten update endpoint kadar ağır olabiliyor. Default 15s yetmez.
+const CART_PAYLOAD_TIMEOUT = 30000;
 
 export async function pconFetch(proxyBase, endpoint, options = {}) {
   const url = `${proxyBase}${endpoint}`;
@@ -39,5 +42,20 @@ export function updateProperties(proxyBase, properties, itemId, articleNumber, m
   return pconFetch(proxyBase, "/api/pcon/update", {
     method: "POST",
     body: JSON.stringify({ properties, itemId, articleNumber, manufacturerId }),
+  });
+}
+
+/**
+ * Cart-add anında çağrılır. Backend EAIWS'ten fresh asset URL'leri
+ * (`_attachment`, `_obx_url`, `_reopen_url`, `_article_image`) çekip,
+ * `_request_id` ve `_basket_id`'i de generate ederek, Shopify
+ * `cart/add.js`'e POST edilebilecek **tam** `cartProperties` objesini
+ * döner. Frontend bunu olduğu gibi cart payload'a gömer.
+ */
+export function fetchCartPayload(proxyBase, body) {
+  return pconFetch(proxyBase, "/api/pcon/cart-payload", {
+    method: "POST",
+    body: JSON.stringify(body),
+    timeout: CART_PAYLOAD_TIMEOUT,
   });
 }

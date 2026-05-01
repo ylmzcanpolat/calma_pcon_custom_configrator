@@ -22,10 +22,15 @@ export async function loader({ request }) {
   const cacheKey = generateCacheKey("init", { articleNumber, manufacturerId: manufacturerId || "" });
 
   const cached = await cacheGet(cacheKey);
-  // Eski cache entry'lerinde `cartProperties` olmayabilir (deploy öncesi
-  // yazılmış). Eksikse cache'i atlayıp tazeleme yolu izleriz; aksi halde
-  // Add to Cart butonu o config için hep disabled kalır.
-  if (cached && cached.cartProperties) {
+  // Cache versioning: yeni format `_request_id` placeholder'ı içerir
+  // (cart-payload endpoint'inde overwrite edilir). Eski entry'ler bu
+  // placeholder'a sahip olmayabilir (deploy öncesi yazılmış); o durumda
+  // cache atlanıp tazelenir, böylece legacy anahtar sırası garanti edilir.
+  if (
+    cached &&
+    cached.cartProperties &&
+    cached.cartProperties._request_id !== undefined
+  ) {
     return Response.json({
       ...cached,
       gltfUrl: cached.originalGltfUrl || cached.gltfUrl,

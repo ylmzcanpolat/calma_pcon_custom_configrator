@@ -1,12 +1,11 @@
 import { create } from "zustand";
-import { initArticle, updateProperties } from "../utils/api.js";
-import { readUrlProperties, writeUrlProperties } from "../utils/url-sync.js";
 import {
-  postCartAdd,
-  generateRequestId,
-  generateUUID,
-  dispatchCartUpdateEvents,
-} from "../utils/cart.js";
+  initArticle,
+  updateProperties,
+  fetchCartPayload,
+} from "../utils/api.js";
+import { readUrlProperties, writeUrlProperties } from "../utils/url-sync.js";
+import { postCartAdd } from "../utils/cart.js";
 
 const responseCache = new Map();
 
@@ -36,7 +35,6 @@ const useConfiguratorStore = create((set, get) => ({
   variantId: null,
   routesRoot: "/",
   addToCartLabel: "Add to Cart",
-  successAction: "drawer-event",
   cartLoading: false,
   cartError: null,
   cartSuccess: false,
@@ -51,7 +49,6 @@ const useConfiguratorStore = create((set, get) => ({
       variantId: config.variantId || null,
       routesRoot: config.routesRoot || "/",
       addToCartLabel: config.addToCartLabel || "Add to Cart",
-      successAction: config.successAction || "drawer-event",
       loading: true,
       error: null,
     });
@@ -203,21 +200,30 @@ const useConfiguratorStore = create((set, get) => ({
   },
 
   /**
-   * Hazır `cartProperties`'i alır, dinamik alanları (request_id, basket_id,
-   * quantity) ekleyip Shopify cart/add.js'e POST atar. Tema iframe'inin
-   * gönderdiği body ile birebir uyumlu.
+   * Cart-add akışı:
    *
-   * Başarısızlıkta `cartError` set edilir, buton tekrar tıklanabilir kalır.
-   * Başarıda `successAction` ayarına göre redirect / reload / drawer event
-   * tetiklenir.
+   *  1. Backend `/api/pcon/cart-payload` çağrılır. EAIWS'ten fresh
+   *     `_attachment`, `_obx_url`, `_reopen_url`, `_article_image` ve
+   *     server-side generate edilen `_request_id`/`_basket_id` ile birlikte
+   *     tam `cartProperties` payload'u alınır.
+   *  2. Dönen `cartProperties` olduğu gibi Shopify `cart/add.js` body'sinin
+   *     `properties` alanına gömülür — legacy `finalProperties` ile birebir.
+   *  3. Başarılı response sonrası sayfa `window.location.reload()` ile
+   *     yenilenir; tema kendi cart count / drawer state'ini fresh çeker.
+   *
+   * Hata durumunda `cartError` set edilir, buton yeniden tıklanabilir kalır.
    */
   async addToCart() {
     const {
       cartProperties,
+      proxyBase,
+      properties,
+      itemId,
+      articleNumber,
+      manufacturerId,
       quantity,
       variantId,
       routesRoot,
-      successAction,
       cartLoading,
       updating,
       loading,
@@ -245,32 +251,51 @@ const useConfiguratorStore = create((set, get) => ({
 
     set({ cartLoading: true, cartError: null, cartSuccess: false });
 
-    const finalProperties = {
-      ...cartProperties,
-      _request_id: generateRequestId(),
-      _basket_id: generateUUID(),
-      _quantity: String(Math.max(1, parseInt(quantity, 10) || 1)),
-    };
+    const safeQuantity = Math.max(1, parseInt(quantity, 10) || 1);
 
-    const items = [
-      {
-        id: variantId,
-        quantity: Math.max(1, parseInt(quantity, 10) || 1),
-        properties: finalProperties,
-      },
-    ];
+    // Backend'in beklediği "PROPCLASS.PROPNAME" → "value" map'i — store'daki
+    // currentValue olanlar.
+    const propertyMap = {};
+    for (const p of properties) {
+      if (p.currentValue) propertyMap[p.id] = p.currentValue;
+    }
 
     try {
-      const payload = await postCartAdd(routesRoot, items);
-      set({ cartLoading: false, cartSuccess: true });
+      const payload = await fetchCartPayload(proxyBase, {
+        properties: propertyMap,
+        itemId,
+        articleNumber,
+        manufacturerId,
+        quantity: safeQuantity,
+      });
 
-      if (successAction === "redirect") {
-        window.location.assign(routesRoot + "cart");
-      } else if (successAction === "reload") {
-        window.location.reload();
-      } else if (successAction === "drawer-event") {
-        dispatchCartUpdateEvents(payload);
+      const finalProperties = payload?.cartProperties;
+      if (!finalProperties) {
+        throw new Error("Cart payload missing cartProperties");
       }
+
+      // Backend stale-itemId fallback'ı yapmış olabilir; store'u güncelle ki
+      // sonraki update çağrıları doğru itemId ile gitsin.
+      const nextState = { cartLoading: false, cartSuccess: true };
+      if (payload.itemId && payload.itemId !== itemId) {
+        nextState.itemId = payload.itemId;
+      }
+
+      const items = [
+        {
+          id: variantId,
+          quantity: safeQuantity,
+          properties: finalProperties,
+        },
+      ];
+
+      await postCartAdd(routesRoot, items);
+      set(nextState);
+
+      // Başarı feedback'i kullanıcıya kısa süreli görünsün diye reload'u
+      // bir sonraki tick'e atıyoruz; aynı tick'te navigate olursa React
+      // unmount'tan önce success badge yansımayabilir.
+      window.setTimeout(() => window.location.reload(), 0);
       return true;
     } catch (err) {
       set({

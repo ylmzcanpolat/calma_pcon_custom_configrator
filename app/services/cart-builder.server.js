@@ -8,72 +8,89 @@
  * Bu modül EAIWS'ten gelen ham `articleData` + `choiceLists`'ten,
  * eski 3. parti middleware'in ürettiği `finalProperties` formatını üretir.
  *
- * Üç bölümden oluşur:
+ * İki aşamalı yapı:
  *
- *  1. **Underscore'lu meta key'ler** — sepette müşteriye görünmez,
- *     sipariş/CRM tarafında işlenir. Çoğu `articleData`'dan türer
- *     (`shortText`, `baseArticleNumber`, `manufacturerId`, `seriesId`,
- *     `catalogImage`, `pdSalesPrice`, `currency`). Bir kısmı sabittir
- *     (`_unit`, `_priceunit`, `_attachment_purpose`, `_item_type` vb.) —
- *     legacy middleware ile uyumluluk için aynen tutulur. `_request_id`,
- *     `_basket_id`, `_quantity` ve gerekirse `_obx_url`/`_attachment` gibi
- *     dinamik alanlar burada üretilmez; her biri cart-add anında frontend
- *     tarafından eklenir (cache'e dondurulmamaları için).
+ *  1. **Static portion** — `buildCartProperties(articleData, choiceLists)`.
+ *     Legacy `finalProperties` ile birebir aynı **anahtar sırasında**, ama
+ *     dinamik (cache'lenemeyen) alanlar için boş placeholder'lar üretir.
+ *     Bu obje Redis'te uzun süreli (24h) cache'lenir.
  *
- *  2. **Divider'lar** — Shopify cart UI'da görsel başlık görevi gören
- *     `divider 1`, `divider 2` ... key'leridir. EAIWS'ten gelen
- *     `propertyClasses` listesine göre, görünür/editable property'lerin
- *     ait olduğu sınıfların açıklamaları kullanılır.
+ *  2. **Dynamic merge** — `mergeCartAssets(staticCart, runtime)`.
+ *     Cart-add anında çağrılır. Boş placeholder'ları gerçek değerlerle
+ *     doldurur:
+ *       - `_request_id`, `_basket_id`           → her cart-add için unique
+ *       - `_quantity`                           → kullanıcının seçtiği adet
+ *       - `_attachment`, `_obx_url`, `_reopen_url`,
+ *         `_article_image`                      → EAIWS session'ından fresh
  *
- *  3. **Müşteriye görünür property'ler** — `propText` → seçili choice'un
- *     `text` değerinin map'lenmesi. EAIWS'in görünür kıldığı her editable
- *     property burada listelenir; bu sayede konfiguratör UI'da görünenle
- *     sepette listelenen birebir aynı olur.
+ * JS objelerinde insertion order korunur; placeholder'ı sonradan overwrite
+ * etmek anahtar pozisyonunu değiştirmez. Bu sayede final payload **legacy
+ * ile birebir aynı sırada** üretilir.
  *
- * VAT, fiyatın KDV-dahil portion'ından geri hesaplanır. Vergi oranı ve
- * vergi kodu env var'dan okunur (`PCON_TAX_RATE`, `PCON_TAX_CODE`).
+ * Anahtar sırası (legacy `finalProperties` payload'undan):
+ *
+ *   _description, _request_id, _quantity, _unit, _Configuration_Price,
+ *   _currency, _vendormat, _Configuration, _cust_field1..5, _ext_quote_id,
+ *   _service, _leadtime, _ext_quote_item, _contract_item, _manufactcode,
+ *   _manufactmat, _ext_product_id, _matgroup, _vendor, _contract,
+ *   _priceunit, _attachment, _attachment_purpose, _item_type, _parent_id,
+ *   _article_image, _eco, _eco_info, _obx_url, _oci_plugin, _priceservice,
+ *   _reopen_url, _taxcode, _vat, _ean, _basket_id, _seriesid,
+ *   _additional_text, _special_model_info, divider 1, ...visible props...
+ *
+ * VAT, fiyatın KDV-dahil portion'ından geri hesaplanır. Vergi oranı, vergi
+ * kodu, reopen URL parametreleri env var'dan okunur.
  */
 
+import { randomBytes, randomUUID } from "node:crypto";
 import { HIDDEN_PROPERTY_IDS } from "./property-mapper.server.js";
 
 const TAX_RATE = parseFloat(process.env.PCON_TAX_RATE || "0.19");
 const TAX_CODE = process.env.PCON_TAX_CODE || "DE";
 
-const STATIC_META = {
-  _cust_field1: "",
-  _cust_field2: "",
-  _cust_field3: "",
-  _cust_field4: "",
-  _cust_field5: "",
-  _ext_quote_id: "",
-  _service: "",
-  _leadtime: "",
-  _ext_quote_item: "",
-  _contract_item: "",
-  _manufactmat: "",
-  _matgroup: "",
-  _vendor: "",
-  _contract: "",
-  _priceunit: "1",
-  _unit: "ST",
-  _attachment: "",
-  _attachment_purpose: "C",
-  _item_type: "R",
-  _parent_id: "",
-  _eco: "0",
-  _eco_info: "Gross Eco Contribution",
-  _obx_url: "",
-  _oci_plugin: "true",
-  _priceservice: "false",
-  _reopen_url: "",
-  _additional_text: "",
-  _special_model_info: "",
-};
+// Reopen URL config — legacy middleware ile uyumlu olması için pCon UI base
+// + flag'ler sabit; gatekeeper ID ve hook URL env'den okunur. Bu URL
+// kullanıcı sepete ekledikten sonra konfigürasyonu PCON UI'da yeniden
+// açabilmesi için CRM'in saklayıp linklediği bir yapıdır.
+const REOPEN_UI_BASE =
+  process.env.PCON_REOPEN_UI_BASE || "https://ui.pcon-solutions.com/";
+const REOPEN_LANG = process.env.PCON_REOPEN_LANG || "en";
+const REOPEN_GATEKEEPER_ID = process.env.PCON_GATEKEEPER_ID || "";
+const REOPEN_HOOK_URL = process.env.PCON_REOPEN_HOOK_URL || "";
+
+const REQUEST_ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const REQUEST_ID_LENGTH = 16;
+
+/**
+ * Legacy middleware'in ürettiği "PCON-XXXXXXXXXXXXXXXX" formatında 16 karakterli
+ * uppercase alphanumeric request id üretir. Crypto-grade rastgelelik kullanır
+ * (Math.random değil); CRM tarafının uniqueness varsayımı korunur.
+ */
+export function generateRequestId() {
+  const buf = randomBytes(REQUEST_ID_LENGTH);
+  let id = "PCON-";
+  for (let i = 0; i < REQUEST_ID_LENGTH; i++) {
+    id += REQUEST_ID_CHARS[buf[i] % REQUEST_ID_CHARS.length];
+  }
+  return id;
+}
+
+/**
+ * Legacy `_basket_id` formatı: RFC4122 v4 UUID. Node 14.17+ standart
+ * `crypto.randomUUID()` kullanılır.
+ */
+export function generateBasketId() {
+  return randomUUID();
+}
 
 /**
  * EAIWS articleData + choiceLists'ten Shopify cart `properties` objesinin
- * statik portion'ını üretir. `_request_id`, `_basket_id` ve `_quantity`
- * frontend'de cart-add anında eklenir.
+ * **statik portion'ını** üretir. Dinamik alanlar (`_request_id`,
+ * `_basket_id`, `_quantity`, `_attachment`, `_obx_url`, `_reopen_url`,
+ * `_article_image`) boş string olarak placeholder edilir; bunlar
+ * `mergeCartAssets()` ile cart-add anında doldurulur.
+ *
+ * Anahtar sırası `finalProperties` legacy payload'unun aynısıdır.
  */
 export function buildCartProperties(articleData, choiceLists) {
   if (!articleData) return null;
@@ -90,25 +107,121 @@ export function buildCartProperties(articleData, choiceLists) {
 
   const vat = computeVatPortion(price, TAX_RATE);
 
-  const meta = {
+  // Anahtar sırası önemli — legacy `finalProperties` ile birebir aynı.
+  // Boş placeholder'lar `mergeCartAssets` tarafından overwrite edilir.
+  const out = {
     _description: shortText,
+    _request_id: "",
+    _quantity: "",
+    _unit: "ST",
     _Configuration_Price: formatPrice(price, 3),
     _currency: currency,
     _vendormat: baseArticleNumber,
     _Configuration: shortText,
+    _cust_field1: "",
+    _cust_field2: "",
+    _cust_field3: "",
+    _cust_field4: "",
+    _cust_field5: "",
+    _ext_quote_id: "",
+    _service: "",
+    _leadtime: "",
+    _ext_quote_item: "",
+    _contract_item: "",
     _manufactcode: manufacturerId,
+    _manufactmat: "",
     _ext_product_id: baseArticleNumber,
+    _matgroup: "",
+    _vendor: "",
+    _contract: "",
+    _priceunit: "1",
+    _attachment: "",
+    _attachment_purpose: "C",
+    _item_type: "R",
+    _parent_id: "",
     _article_image: catalogImage,
+    _eco: "0",
+    _eco_info: "Gross Eco Contribution",
+    _obx_url: "",
+    _oci_plugin: "true",
+    _priceservice: "false",
+    _reopen_url: "",
     _taxcode: TAX_CODE,
     _vat: formatPrice(vat, 2),
     _ean: baseArticleNumber,
+    _basket_id: "",
     _seriesid: seriesId,
-    ...STATIC_META,
+    _additional_text: "",
+    _special_model_info: "",
   };
 
   const visible = buildVisibleProperties(articleData, choiceLists);
+  for (const [key, value] of Object.entries(visible)) {
+    out[key] = value;
+  }
 
-  return { ...meta, ...visible };
+  return out;
+}
+
+/**
+ * Static cartProperties üzerine dinamik alanları yazar. Yeni bir obje
+ * dönerek immutability sağlar (caller cached static cart'ı bozmasın).
+ *
+ * Boş bırakılan alanlar atlanır — örneğin `articleImageUrl` verilmezse
+ * cached static `_article_image` korunur.
+ */
+export function mergeCartAssets(staticCart, runtime = {}) {
+  if (!staticCart) return null;
+
+  const out = { ...staticCart };
+
+  if (runtime.requestId) out._request_id = runtime.requestId;
+  if (runtime.basketId) out._basket_id = runtime.basketId;
+  if (runtime.quantity != null) out._quantity = String(runtime.quantity);
+
+  if (runtime.attachmentUrl) out._attachment = runtime.attachmentUrl;
+  if (runtime.obxUrl) out._obx_url = runtime.obxUrl;
+  if (runtime.articleImageUrl) out._article_image = runtime.articleImageUrl;
+
+  // Reopen URL ya direkt verilir ya da OBX URL'den construct edilir.
+  if (runtime.reopenUrl) {
+    out._reopen_url = runtime.reopenUrl;
+  } else if (runtime.obxUrl) {
+    out._reopen_url = buildReopenUrl(runtime.obxUrl);
+  }
+
+  return out;
+}
+
+/**
+ * PCON UI'ın "reopen configuration" linkini üretir. Legacy URL şablonu:
+ *
+ *   https://ui.pcon-solutions.com/#GATEKEEPER_ID=...&lang=en&sp=true&hde=true
+ *     &asi=false&msi=true&san=true&ssi=false&HOOK_URL=...&obx=...
+ *
+ * Sıra önemli: legacy CRM'in dictionaries için key sırasını koruyabildiği
+ * varsayımıyla aynen kopyalıyoruz. URL fragment kullanır (`#` sonrası), bu
+ * yüzden URLSearchParams ile encode edip `?` yerine `#` ile birleştiriyoruz.
+ */
+export function buildReopenUrl(obxUrl, opts = {}) {
+  const base = (opts.base || REOPEN_UI_BASE).replace(/\/+$/, "");
+  const gatekeeperId = opts.gatekeeperId || REOPEN_GATEKEEPER_ID;
+  const hookUrl = opts.hookUrl || REOPEN_HOOK_URL;
+  const lang = opts.lang || REOPEN_LANG;
+
+  const params = new URLSearchParams();
+  if (gatekeeperId) params.set("GATEKEEPER_ID", gatekeeperId);
+  params.set("lang", lang);
+  params.set("sp", "true");
+  params.set("hde", "true");
+  params.set("asi", "false");
+  params.set("msi", "true");
+  params.set("san", "true");
+  params.set("ssi", "false");
+  if (hookUrl) params.set("HOOK_URL", hookUrl);
+  if (obxUrl) params.set("obx", obxUrl);
+
+  return `${base}/#${params.toString()}`;
 }
 
 function buildVisibleProperties(articleData, choiceLists) {

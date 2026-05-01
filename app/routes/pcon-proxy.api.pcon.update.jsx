@@ -35,10 +35,14 @@ export async function action({ request }) {
   });
 
   const cached = await cacheGet(cacheKey);
-  // Eski cache entry'leri (deploy öncesi yazılmış) `cartProperties` içermez.
-  // Bu durumda cache'i atlayıp tazeleme yolu izlenir; aksi halde Add to Cart
-  // butonu bu konfigürasyon için her zaman disabled kalır.
-  if (cached && cached.cartProperties) {
+  // Cache versioning: yeni cartProperties formatı `_request_id` placeholder'ı
+  // içerir (cart-payload endpoint'inde overwrite edilir). Eski entry'ler bu
+  // placeholder'a sahip olmadığı için organik bir migration ile bypass edilir.
+  if (
+    cached &&
+    cached.cartProperties &&
+    cached.cartProperties._request_id !== undefined
+  ) {
     return Response.json({
       ...cached,
       gltfUrl: cached.originalGltfUrl || cached.gltfUrl,
