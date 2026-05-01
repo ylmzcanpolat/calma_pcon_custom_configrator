@@ -9,7 +9,7 @@ const LOG_PROPERTIES = process.env.PCON_LOG_PROPERTIES !== "0";
  * so hidden IDs disappear from every response uniformly.
  */
 export const HIDDEN_PROPERTY_IDS = new Set([
-  /* "MT_TEXT.Meta_Dimension", */
+  "MT_TEXT.Meta_Dimension",
 ]);
 
 export function isHiddenPropertyId(id) {

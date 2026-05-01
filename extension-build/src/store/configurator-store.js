@@ -6,6 +6,12 @@ import {
 } from "../utils/api.js";
 import { readUrlProperties, writeUrlProperties } from "../utils/url-sync.js";
 import { postCartAdd } from "../utils/cart.js";
+import {
+  getPreorderIntent,
+  clearPreorderIntent,
+  getCustomerId,
+  postPreorderAddLine,
+} from "../utils/preorder-intent.js";
 
 const responseCache = new Map();
 
@@ -200,16 +206,26 @@ const useConfiguratorStore = create((set, get) => ({
   },
 
   /**
-   * Cart-add akışı:
+   * Cart-add akışı (iki dallı):
    *
-   *  1. Backend `/api/pcon/cart-payload` çağrılır. EAIWS'ten fresh
-   *     `_attachment`, `_obx_url`, `_reopen_url`, `_article_image` ve
-   *     server-side generate edilen `_request_id`/`_basket_id` ile birlikte
-   *     tam `cartProperties` payload'u alınır.
-   *  2. Dönen `cartProperties` olduğu gibi Shopify `cart/add.js` body'sinin
-   *     `properties` alanına gömülür — legacy `finalProperties` ile birebir.
-   *  3. Başarılı response sonrası sayfa `window.location.reload()` ile
-   *     yenilenir; tema kendi cart count / drawer state'ini fresh çeker.
+   *  1. Backend `/api/pcon/cart-payload` her durumda çağrılır. EAIWS'ten
+   *     fresh `_attachment`, `_obx_url`, `_reopen_url`, `_article_image` ve
+   *     server-side generate edilen `_request_id`/`_basket_id` ile tam
+   *     `cartProperties` payload'u alınır. (Preorder akışında da bu meta'lar
+   *     draft order line item'a kaydediliyor — daha sonra siparişi işlerken
+   *     pCon UI reopen'ı için gerekli.)
+   *
+   *  2a. **Preorder mode** — `localStorage["calma_preorder_intent"]` aktif:
+   *      Kardeş app'in (B2B Dealer Portal) preorder sistemine bağlanır.
+   *      `cart/add.js`'e UĞRAMAZ; `POST /apps/b2b-portal/preorder/add-line`
+   *      ile satır draft order'a eklenir. Başarıda alert + intent clear +
+   *      `/pages/b2b-account#preorder-<id>` redirect (RELOAD YOK). Hatada
+   *      alert + intent KORUNUR (dealer tekrar deneyebilsin) + PDP'de kal.
+   *
+   *  2b. **Normal mode** — intent yok/expired:
+   *      Dönen `cartProperties` olduğu gibi Shopify `cart/add.js` body'sinin
+   *      `properties` alanına gömülür. Başarıda sayfa `window.location.reload()`
+   *      ile yenilenir; tema kendi cart count / drawer state'ini fresh çeker.
    *
    * Hata durumunda `cartError` set edilir, buton yeniden tıklanabilir kalır.
    */
@@ -281,6 +297,58 @@ const useConfiguratorStore = create((set, get) => ({
         nextState.itemId = payload.itemId;
       }
 
+      // Preorder intent kontrolü — kardeş B2B Dealer Portal app'i tarafından
+      // localStorage'a yazılan 10 dk TTL'li intent. Banner app embed'i theme'de
+      // enable ise window.CalmaPreorderIntent global'i de mevcut; helper iki
+      // kaynağı da otomatik handle eder.
+      const preorderIntent = getPreorderIntent();
+
+      if (preorderIntent) {
+        // ── PREORDER MODE ──────────────────────────────────────────────
+        // cart/add.js'e UĞRAMA. Doğrudan kardeş app'in preorder add-line
+        // endpoint'ine POST at; başarıda alert + redirect, hatada intent
+        // korunur (dealer tekrar deneyebilsin) ve PDP'de kalınır.
+        const customerId = getCustomerId();
+
+        let preorderResult;
+        try {
+          preorderResult = await postPreorderAddLine({
+            logged_in_customer_id: customerId,
+            draftOrderId: preorderIntent.draftOrderId,
+            variantId,
+            quantity: safeQuantity,
+            properties: finalProperties,
+          });
+        } catch (err) {
+          console.error("[Configurator] Preorder add-line error:", err);
+          window.alert("❌ Could not add to preorder. Please try again.");
+          set({ cartLoading: false });
+          return false;
+        }
+
+        if (!preorderResult || preorderResult.error) {
+          const detail = preorderResult?.error || "Unknown error";
+          window.alert("❌ Could not add to preorder: " + detail);
+          set({ cartLoading: false });
+          return false;
+        }
+
+        const draftName =
+          preorderResult.draftOrder?.name ||
+          preorderIntent.draftOrderName ||
+          "preorder";
+        window.alert("✅ Product added to Preorder " + draftName);
+
+        clearPreorderIntent();
+        set(nextState);
+        // Redirect — RELOAD YOK; reload yapılırsa redirect'in önüne geçer
+        // ve dealer PDP'de sıkışır.
+        window.location.href =
+          "/pages/b2b-account#preorder-" + preorderIntent.draftOrderId;
+        return true;
+      }
+
+      // ── NORMAL MODE ────────────────────────────────────────────────
       const items = [
         {
           id: variantId,
