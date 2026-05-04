@@ -1,6 +1,11 @@
-const DEFAULT_TIMEOUT = 15000;
+// Init/update endpoint'leri pCon EAIWS'e proxy yapıyor: ilk (cold) MISS'te
+// pCon round-trip + property mapping ~5-10s sürebilir. Shopify App Proxy
+// 30sn timeout sınırı içinde maksimum buffer veriyoruz; backend Draco gibi
+// pahalı işlemleri bilinçli olarak fire-and-forget arka plana atıyor ki bu
+// timeout tetiklenmesin.
+const DEFAULT_TIMEOUT = 30000;
 // Cart payload endpoint EAIWS'te 2-3 round-trip yapar (setProperties + asset
-// gen); GLTF üreten update endpoint kadar ağır olabiliyor. Default 15s yetmez.
+// gen); GLTF üreten update endpoint kadar ağır olabiliyor.
 const CART_PAYLOAD_TIMEOUT = 30000;
 
 export async function pconFetch(proxyBase, endpoint, options = {}) {

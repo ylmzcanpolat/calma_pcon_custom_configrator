@@ -5,8 +5,10 @@ import {
   cacheGet,
   cacheSet,
 } from "../services/redis-client.server";
-import { cacheGltf } from "../services/gltf-cache.server";
+import { upgradeCacheEntryWithLocalGltf } from "../services/gltf-cache.server";
 import { warmCacheInBackground } from "../services/cache-warmer.server";
+
+const LOCAL_GLTF_PREFIX = "/apps/pcon-configurator/gltf/";
 
 export async function loader({ request }) {
   await authenticate.public.appProxy(request);
@@ -31,18 +33,26 @@ export async function loader({ request }) {
     cached.cartProperties &&
     cached.cartProperties._request_id !== undefined
   ) {
-    return Response.json({
-      ...cached,
-      gltfUrl: cached.originalGltfUrl || cached.gltfUrl,
-    });
+    // Tercihli sıra: warmer veya önceki MISS path'i tarafından yazılmış
+    // local proxy URL. Eski entry'ler (deploy öncesi yazılmış) sadece pCon
+    // CDN URL içerir; bu durumda response'u bloklamadan arka planda local
+    // cache hazırlanıp Redis entry yükseltilir.
+    let gltfUrl = cached.gltfUrl;
+    if (!gltfUrl || !gltfUrl.startsWith(LOCAL_GLTF_PREFIX)) {
+      const sourceUrl = cached.originalGltfUrl || cached.gltfUrl;
+      upgradeCacheEntryWithLocalGltf(cacheKey, sourceUrl);
+      gltfUrl = sourceUrl;
+    }
+    return Response.json({ ...cached, gltfUrl });
   }
 
   try {
     const pcon = getPconClient();
     const data = await pcon.getArticleData(articleNumber, manufacturerId);
 
-    cacheGltf(data.gltfUrl).catch(() => {});
-
+    // İlk MISS: pCon CDN URL ile hızlıca cevap dön. Local cache + Draco
+    // compression arka planda hazırlanır; bir sonraki request local URL alır.
+    // Bu sayede HTTP timeout (frontend ya da Shopify App Proxy) tetiklenmez.
     const result = {
       price: data.price,
       gltfUrl: data.gltfUrl,
@@ -54,6 +64,8 @@ export async function loader({ request }) {
     };
 
     await cacheSet(cacheKey, result);
+
+    upgradeCacheEntryWithLocalGltf(cacheKey, data.gltfUrl);
 
     warmCacheInBackground(articleNumber, manufacturerId, data.properties, data.itemId);
 

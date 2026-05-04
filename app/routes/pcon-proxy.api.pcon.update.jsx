@@ -5,7 +5,9 @@ import {
   cacheGet,
   cacheSet,
 } from "../services/redis-client.server";
-import { cacheGltf } from "../services/gltf-cache.server";
+import { upgradeCacheEntryWithLocalGltf } from "../services/gltf-cache.server";
+
+const LOCAL_GLTF_PREFIX = "/apps/pcon-configurator/gltf/";
 
 export async function action({ request }) {
   await authenticate.public.appProxy(request);
@@ -43,10 +45,13 @@ export async function action({ request }) {
     cached.cartProperties &&
     cached.cartProperties._request_id !== undefined
   ) {
-    return Response.json({
-      ...cached,
-      gltfUrl: cached.originalGltfUrl || cached.gltfUrl,
-    });
+    let gltfUrl = cached.gltfUrl;
+    if (!gltfUrl || !gltfUrl.startsWith(LOCAL_GLTF_PREFIX)) {
+      const sourceUrl = cached.originalGltfUrl || cached.gltfUrl;
+      upgradeCacheEntryWithLocalGltf(cacheKey, sourceUrl);
+      gltfUrl = sourceUrl;
+    }
+    return Response.json({ ...cached, gltfUrl });
   }
 
   try {
@@ -73,8 +78,6 @@ export async function action({ request }) {
       data = await pcon.setPropertyValue(fresh.itemId, propertyList);
     }
 
-    cacheGltf(data.gltfUrl).catch(() => {});
-
     const result = {
       price: data.price,
       gltfUrl: data.gltfUrl,
@@ -85,6 +88,8 @@ export async function action({ request }) {
     };
 
     await cacheSet(cacheKey, result);
+
+    upgradeCacheEntryWithLocalGltf(cacheKey, data.gltfUrl);
 
     return Response.json(result);
   } catch (err) {
