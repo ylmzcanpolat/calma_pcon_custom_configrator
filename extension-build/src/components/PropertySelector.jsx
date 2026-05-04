@@ -5,9 +5,18 @@ export default function PropertySelector() {
   const properties = useConfiguratorStore((s) => s.properties);
   const updateProperty = useConfiguratorStore((s) => s.updateProperty);
 
+  // Accordion davranışı — aynı anda en fazla bir grup açık. `null` hepsi kapalı.
+  // Açık olan gruba tekrar tıklanırsa kapanır; başka bir gruba tıklanırsa
+  // eskisi otomatik kapanır (handleToggle tek state geçişiyle hallediyor).
+  const [openId, setOpenId] = useState(null);
+
   const editableProps = properties.filter((p) => p.editable && p.options.length > 0);
 
   if (editableProps.length === 0) return null;
+
+  const handleToggle = (id) => {
+    setOpenId((prev) => (prev === id ? null : id));
+  };
 
   return (
     <div className="pcon-properties">
@@ -15,6 +24,8 @@ export default function PropertySelector() {
         <PropertyCollapsible
           key={prop.id}
           prop={prop}
+          open={openId === prop.id}
+          onToggle={() => handleToggle(prop.id)}
           onSelect={(value) => updateProperty(prop.id, value)}
         />
       ))}
@@ -22,8 +33,7 @@ export default function PropertySelector() {
   );
 }
 
-function PropertyCollapsible({ prop, onSelect }) {
-  const [open, setOpen] = useState(false);
+function PropertyCollapsible({ prop, open, onToggle, onSelect }) {
 
   const isColor = prop.type === "color";
   const currentOption = prop.options.find((o) => o.value === prop.currentValue);
@@ -52,7 +62,7 @@ function PropertyCollapsible({ prop, onSelect }) {
         type="button"
         className="pcon-prop-group__header"
         aria-expanded={open}
-        onClick={() => setOpen((prev) => !prev)}
+        onClick={onToggle}
       >
         <span className="pcon-prop-group__header-main">
           <span className="pcon-prop-group__label">{prop.label}</span>
