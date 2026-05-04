@@ -15,7 +15,10 @@ kill_timeout = "30s"
   # Persistent volume içindeki SQLite DB (volume `/app/.cache`'e mount).
   DATABASE_URL = "file:/app/.cache/db/prod.sqlite"
   # Single instance kullanırken scheduler default açık.
+  # RUN_SCHEDULER=0 → node-cron hiç başlamaz.
+  # CACHE_WARMING_ENABLED=1 → cron + init sonrası background + npm run warm-cache aktif (varsayılan kapalı).
   RUN_SCHEDULER = "1"
+  CACHE_WARMING_ENABLED = "0"
   # GLTF disk cache hard cap (MB). Volume büyüklüğünden küçük tutulmalı.
   GLTF_CACHE_MAX_SIZE_MB = "5000"
   PCON_EAIWS_URL = "https://eaiws.pcon-solutions.com"
@@ -52,9 +55,9 @@ kill_timeout = "30s"
   initial_size = "10gb"
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "2gb"
-  cpu_kind = "shared"
+  size = "performance-1x"
+  memory = "8gb"
+  cpu_kind = "performance"
   cpus = 1
 
 [checks.http_alive]

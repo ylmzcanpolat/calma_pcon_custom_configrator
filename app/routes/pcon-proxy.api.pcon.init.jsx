@@ -7,6 +7,7 @@ import {
 } from "../services/redis-client.server";
 import { upgradeCacheEntryWithLocalGltf } from "../services/gltf-cache.server";
 import { warmCacheInBackground } from "../services/cache-warmer.server";
+import { isCacheWarmingEnabled } from "../services/cache-warming-config.server";
 
 const LOCAL_GLTF_PREFIX = "/apps/pcon-configurator/gltf/";
 
@@ -67,7 +68,9 @@ export async function loader({ request }) {
 
     upgradeCacheEntryWithLocalGltf(cacheKey, data.gltfUrl);
 
-    warmCacheInBackground(articleNumber, manufacturerId, data.properties, data.itemId);
+    if (isCacheWarmingEnabled()) {
+      warmCacheInBackground(articleNumber, manufacturerId, data.properties);
+    }
 
     return Response.json(result);
   } catch (err) {

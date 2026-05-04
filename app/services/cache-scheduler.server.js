@@ -2,6 +2,7 @@ import cron from "node-cron";
 import { fetchPconProducts } from "./product-fetcher.server.js";
 import { warmArticle } from "./article-warmer.server.js";
 import { cacheSet } from "./redis-client.server.js";
+import { isCacheWarmingEnabled } from "./cache-warming-config.server.js";
 
 const CRON_SCHEDULE = process.env.CACHE_WARM_CRON || "0 3,15 * * *";
 let scheduled = false;
@@ -9,6 +10,13 @@ let scheduled = false;
 export function startCacheScheduler() {
   if (scheduled) return;
   scheduled = true;
+
+  if (!isCacheWarmingEnabled()) {
+    console.log(
+      "[cache-scheduler] Cache warming disabled (set CACHE_WARMING_ENABLED=1 to enable cron + cycles)",
+    );
+    return;
+  }
 
   if (!cron.validate(CRON_SCHEDULE)) {
     console.error(
@@ -27,6 +35,15 @@ export function startCacheScheduler() {
 }
 
 export async function runWarmingCycle({ layers = [1, 2], dryRun = false, verbose = false, onProgress } = {}) {
+  if (!isCacheWarmingEnabled()) {
+    console.log("[cache-scheduler] runWarmingCycle skipped — CACHE_WARMING_ENABLED is not set");
+    return {
+      success: false,
+      skipped: true,
+      reason: "CACHE_WARMING_DISABLED",
+    };
+  }
+
   const startTime = Date.now();
   console.log("[cache-scheduler] Starting warming cycle...");
 

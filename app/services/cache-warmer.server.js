@@ -1,10 +1,13 @@
 import { getPconClient } from "./pcon-client.server.js";
 import { generateCacheKey, cacheGet, cacheSet } from "./redis-client.server.js";
 import { cacheGltf } from "./gltf-cache.server.js";
+import { isCacheWarmingEnabled } from "./cache-warming-config.server.js";
 
 const warmingInProgress = new Set();
 
 export function warmCacheInBackground(articleNumber, manufacturerId, properties) {
+  if (!isCacheWarmingEnabled()) return;
+
   const warmKey = articleNumber + ":" + (manufacturerId || "");
   if (warmingInProgress.has(warmKey)) return;
   warmingInProgress.add(warmKey);

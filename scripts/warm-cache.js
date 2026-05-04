@@ -15,6 +15,7 @@
 import "dotenv/config";
 import { warmArticle } from "../app/services/article-warmer.server.js";
 import { disconnectRedis } from "../app/services/redis-client.server.js";
+import { isCacheWarmingEnabled } from "../app/services/cache-warming-config.server.js";
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -63,6 +64,13 @@ function formatDuration(seconds) {
 }
 
 async function main() {
+  if (!isCacheWarmingEnabled()) {
+    console.log(
+      "[warm-cache] Disabled: set CACHE_WARMING_ENABLED=1 in the environment to run this script.",
+    );
+    return;
+  }
+
   const opts = parseArgs(process.argv);
   let articles;
 

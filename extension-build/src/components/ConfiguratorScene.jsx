@@ -49,23 +49,13 @@ class ModelErrorBoundary extends Component {
   }
 }
 
-function ModelLoadingProgress({ percent }) {
+function ModelLoadingProgress() {
   return (
     <Html center>
-      <div style={{ textAlign: "center", color: "#666", width: "200px" }}>
-        <div style={{
-          width: "100%", height: "4px", background: "#e0e0e0",
-          borderRadius: "2px", overflow: "hidden",
-        }}>
-          <div style={{
-            width: percent + "%", height: "100%",
-            background: "#333", borderRadius: "2px",
-            transition: "width 0.2s ease",
-          }} />
-        </div>
-        <p style={{ fontSize: "12px", marginTop: "8px" }}>
-          Loading model… {percent}%
-        </p>
+      <div className="pcon-suspense-spinner" aria-hidden="true">
+        <span className="pcon-suspense-spinner__dot" />
+        <span className="pcon-suspense-spinner__dot" />
+        <span className="pcon-suspense-spinner__dot" />
       </div>
     </Html>
   );
@@ -77,48 +67,109 @@ const HDRI_URL =
 const SPINNER_R = 28;
 const SPINNER_C = 2 * Math.PI * SPINNER_R;
 
+// Spinner UX best practice (Nielsen Norman Group):
+//   - <200ms işlemler için spinner gösterilmez (algılanan "anlık" yanıt)
+//   - Spinner gösterilmişse en az ~400ms görünür kalır (flicker önleme)
+//   - Belirsiz süre = indeterminate animation; ölçülebilir progress = determinate
+const SPINNER_SHOW_DELAY_MS = 200;
+const SPINNER_MIN_VISIBLE_MS = 400;
+
 export default function ConfiguratorScene({ canvasHeight, environmentPreset }) {
   const gltfUrl = useConfiguratorStore((s) => s.gltfUrl);
   const loading = useConfiguratorStore((s) => s.loading);
   const updating = useConfiguratorStore((s) => s.updating);
   const error = useConfiguratorStore((s) => s.error);
-  const [loadProgress, setLoadProgress] = useState(0);
+
+  // Model indirme/parsing durumu — backend updating bittikten sonra GLB
+  // hala indiriliyor olabilir, bu süreyi de spinner'la kapsıyoruz.
+  const [isModelLoading, setIsModelLoading] = useState(false);
+  // null = indeterminate (Content-Length yok ya da henüz progress event yok),
+  // sayı = determinate yüzde.
+  const [modelProgress, setModelProgress] = useState(null);
 
   const [showSpinner, setShowSpinner] = useState(false);
-  const [spinnerPct, setSpinnerPct] = useState(0);
+  const showTimerRef = useRef(null);
   const hideTimerRef = useRef(null);
+  const shownAtRef = useRef(0);
 
+  // gltfUrl değişimi = yeni model. Model.jsx mount edildiğinde onProgress(0)
+  // veya cached ise onProgress(100) çağıracak; buna kadar "yükleniyor" say.
   useEffect(() => {
-    if (!updating) return;
-    if (hideTimerRef.current) {
-      clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
-    }
-    setShowSpinner(true);
-    setSpinnerPct(0);
-
-    let fake = 0;
-    const iv = setInterval(() => {
-      fake = Math.min(fake + 2, 30);
-      setSpinnerPct(fake);
-    }, 100);
-    return () => clearInterval(iv);
-  }, [updating]);
-
-  useEffect(() => () => {
-    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-  }, []);
+    if (!gltfUrl) return;
+    setIsModelLoading(true);
+    setModelProgress(null);
+  }, [gltfUrl]);
 
   const handleProgress = useCallback((percent) => {
-    setLoadProgress(percent);
-    setSpinnerPct(30 + percent * 0.7);
     if (percent >= 100) {
-      hideTimerRef.current = setTimeout(() => {
-        setShowSpinner(false);
-        setSpinnerPct(0);
-      }, 400);
+      // Yükleme bitti; bir tick beklet ki Three.js scene mount tamamlansın,
+      // sonra spinner'ı kaldırma kararını ver. State güncellemesi useEffect'i
+      // tetikleyecek, hide timer minimum visible süreye uyacak.
+      setModelProgress(100);
+      setIsModelLoading(false);
+    } else {
+      setModelProgress(percent);
     }
   }, []);
+
+  const isBusy = updating || isModelLoading;
+
+  // Spinner görünürlük yönetimi: gösterme/gizleme timer'ları ile flicker
+  // ve "spinner takılı kaldı" hissini önlüyoruz.
+  useEffect(() => {
+    if (isBusy) {
+      // Pending hide varsa iptal et — iş hala devam ediyor.
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+      // Zaten görünüyorsa veya gösterme zamanlanmışsa tekrar zamanlama.
+      if (showSpinner || showTimerRef.current) return;
+
+      showTimerRef.current = setTimeout(() => {
+        showTimerRef.current = null;
+        shownAtRef.current = Date.now();
+        setShowSpinner(true);
+      }, SPINNER_SHOW_DELAY_MS);
+      return;
+    }
+
+    // İş bitti.
+    // Henüz gösterilmemişse (grace period içinde tamamlandı) zamanlamayı iptal.
+    if (showTimerRef.current) {
+      clearTimeout(showTimerRef.current);
+      showTimerRef.current = null;
+    }
+    if (!showSpinner) return;
+
+    // Spinner görünür → minimum süre dolmasını bekle, sonra gizle.
+    const elapsed = Date.now() - shownAtRef.current;
+    const remaining = Math.max(0, SPINNER_MIN_VISIBLE_MS - elapsed);
+
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    hideTimerRef.current = setTimeout(() => {
+      hideTimerRef.current = null;
+      setShowSpinner(false);
+      setModelProgress(null);
+    }, remaining);
+  }, [isBusy, showSpinner]);
+
+  useEffect(
+    () => () => {
+      if (showTimerRef.current) clearTimeout(showTimerRef.current);
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    },
+    [],
+  );
+
+  // Determinate mode'a sadece backend isteği bittiğinde ve gerçek bir model
+  // download yüzdesi geldiğinde geçiyoruz. Backend beklerken (updating) ya
+  // da progress event yokken indeterminate kalıyor — sahte ilerleme yok.
+  const isDeterminate =
+    !updating && modelProgress != null && modelProgress > 0 && modelProgress < 100;
+  const dashOffset = isDeterminate
+    ? SPINNER_C * (1 - modelProgress / 100)
+    : SPINNER_C * 0.75;
 
   if (loading) {
     return (
@@ -170,7 +221,7 @@ export default function ConfiguratorScene({ canvasHeight, environmentPreset }) {
               environmentIntensity={0.8}
             />
             <directionalLight position={[5, 5, 5]} intensity={0.3} />
-            <Suspense fallback={<ModelLoadingProgress percent={loadProgress} />}>
+            <Suspense fallback={<ModelLoadingProgress />}>
               <ModelErrorBoundary>
                 <Model key={gltfUrl} url={gltfUrl} onProgress={handleProgress} />
               </ModelErrorBoundary>
@@ -190,25 +241,36 @@ export default function ConfiguratorScene({ canvasHeight, environmentPreset }) {
         )}
 
         {showSpinner && (
-          <div className="pcon-updating">
-            <div className="pcon-progress-spinner">
+          <div className="pcon-updating" role="status" aria-live="polite">
+            <div
+              className={
+                "pcon-progress-spinner" +
+                (isDeterminate ? "" : " pcon-progress-spinner--indeterminate")
+              }
+            >
               <svg viewBox="0 0 64 64" className="pcon-progress-spinner__svg">
                 <circle
                   className="pcon-progress-spinner__track"
-                  cx="32" cy="32" r={SPINNER_R}
+                  cx="32"
+                  cy="32"
+                  r={SPINNER_R}
                 />
                 <circle
                   className="pcon-progress-spinner__fill"
-                  cx="32" cy="32" r={SPINNER_R}
+                  cx="32"
+                  cy="32"
+                  r={SPINNER_R}
                   style={{
                     strokeDasharray: SPINNER_C,
-                    strokeDashoffset: SPINNER_C * (1 - spinnerPct / 100),
+                    strokeDashoffset: dashOffset,
                   }}
                 />
               </svg>
-              <span className="pcon-progress-spinner__pct">
-                {Math.round(spinnerPct)}%
-              </span>
+              {isDeterminate && (
+                <span className="pcon-progress-spinner__pct">
+                  {Math.round(modelProgress)}%
+                </span>
+              )}
             </div>
           </div>
         )}
