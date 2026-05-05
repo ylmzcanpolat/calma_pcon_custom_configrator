@@ -52,14 +52,14 @@ export async function mapProperties(articleData, choiceLists) {
       let type = "text";
       if (prop.choiceList && choices.length > 0) {
         const hasIcons = choices.some(
-          (c) => c.smallIcon || c.largeIcon || c.image,
+          (c) => c.largeIcon || c.smallIcon || c.image,
         );
         type = hasIcons ? "color" : "select";
       }
 
       const options = await Promise.all(
         choices.map(async (pv) => {
-          const remoteIcon = pv.smallIcon || pv.image || null;
+          const remoteIcon = pv.largeIcon || pv.smallIcon || pv.image || null;
           const icon = remoteIcon ? await cacheIcon(remoteIcon) : null;
           return {
             value: pv.value,
@@ -125,22 +125,22 @@ function logRawProperties(props, choiceMap) {
     );
   }
 
-  const fmt = (row) =>
+  /* const fmt = (row) =>
     Object.keys(headers)
       .map((k) => String(row[k]).padEnd(widths[k]))
-      .join("  ");
+      .join("  "); */
 
-  console.log(`[property-mapper] Raw EAIWS properties (${rows.length})`);
-  console.log("[property-mapper] " + fmt(headers));
-  console.log(
+  /* console.log(`[property-mapper] Raw EAIWS properties (${rows.length})`); */
+  /* console.log("[property-mapper] " + fmt(headers)); */
+  /* console.log(
     "[property-mapper] " +
       fmt(
         Object.fromEntries(
           Object.keys(headers).map((k) => [k, "-".repeat(widths[k])]),
         ),
       ),
-  );
-  for (const row of rows) {
+  ); */
+  /* for (const row of rows) {
     console.log("[property-mapper] " + fmt(row));
-  }
+  } */
 }

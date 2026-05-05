@@ -3,6 +3,7 @@ import { EaiwsSession } from "@easterngraphics/wcf/modules/eaiws/index.js";
 import { InsertInfo } from "@easterngraphics/wcf/modules/eaiws/basket/index.js";
 import { mapProperties } from "./property-mapper.server.js";
 import { buildCartProperties } from "./cart-builder.server.js";
+import { GetChoiceListOptions } from "@easterngraphics/wcf/modules/eaiws/basket";
 
 const GATEKEEPER_BASE_URL = "https://gatekeeper.eaiws.pcon-solutions.com/v2";
 const GATEKEEPER_ID = process.env.PCON_GATEKEEPER_ID || "";
@@ -76,7 +77,7 @@ class PconClient {
 
     const data = await response.json();
 
-    console.log("data", data);
+/*     console.log("data", data); */
 
     return {
       server: data.server,
@@ -88,10 +89,10 @@ class PconClient {
   async _doConnect() {
     for (let attempt = 1; attempt <= MAX_RECONNECT_ATTEMPTS; attempt++) {
       try {
-        console.log(`[PconClient] Connection attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS}`);
+        /* console.log(`[PconClient] Connection attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS}`); */
 
         const gkSession = await this._createGatekeeperSession();
-        console.log(`[PconClient] Gatekeeper session created on ${gkSession.server}`);
+        /* console.log(`[PconClient] Gatekeeper session created on ${gkSession.server}`); */
 
         this.session = new EaiwsSession();
 
@@ -146,10 +147,12 @@ class PconClient {
       enableBooleanPropType: true,
     });
 
-    const choiceLists = await session.basket.getAllChoiceLists(itemId, {
-      fetchCatalogImage: true,
-      enableBooleanPropType: true,
-    });
+    const tOptions = new GetChoiceListOptions();
+    tOptions.enableBooleanPropType = true;
+    tOptions.highResPropValueIcons = true;
+    tOptions.fetchPropValueImages = true;
+
+    const choiceLists = await session.basket.getAllChoiceLists(itemId, tOptions);
 
     const gltfUrl = await session.basket.getExportedGeometry(itemId, [
       "format=GLTF",
@@ -214,12 +217,14 @@ class PconClient {
       enableBooleanPropType: true,
     });
 
-    const choiceLists = await session.basket.getAllChoiceLists(targetItemId, {
-      fetchCatalogImage: true,
-      enableBooleanPropType: true,
-      HighResPropValueIcons: true,
-      FetchPropValueImages: true,
-    });
+    const tOptions = new GetChoiceListOptions();
+    tOptions.enableBooleanPropType = true;
+    tOptions.highResPropValueIcons = true;
+    tOptions.fetchPropValueImages = true;
+
+    const choiceLists = await session.basket.getAllChoiceLists(targetItemId, tOptions);
+
+    console.log("choiceLists", JSON.stringify(choiceLists, null, 2));
 
     const gltfUrl = await session.basket.getExportedGeometry(targetItemId, [
       "format=GLTF",
