@@ -1,6 +1,19 @@
 import { useState } from "react";
 import useConfiguratorStore from "../store/configurator-store.js";
 
+/**
+ * Nested property relationships.
+ * Key   = child prop ID  (rendered inside parent's collapsible body)
+ * Value = parent prop ID (hosts the child)
+ *
+ * When a parent's value changes the store already fetches fresh `properties`
+ * from the backend, so the child's options update automatically — no extra
+ * logic is required here.
+ */
+const NESTED_PROP_CHILD_OF = {
+  "DUVAR.DOSEME_RENK_DUVAR": "DUVAR.DOSEME_SERI_DUVAR",
+};
+
 export default function PropertySelector() {
   const properties = useConfiguratorStore((s) => s.properties);
   const updateProperty = useConfiguratorStore((s) => s.updateProperty);
@@ -18,13 +31,30 @@ export default function PropertySelector() {
 
   if (editableProps.length === 0) return null;
 
+  // IDs of props that must be rendered nested — excluded from top-level list.
+  const childPropIds = new Set(Object.keys(NESTED_PROP_CHILD_OF));
+
+  // Top-level props: everything that is NOT a designated nested child.
+  const topLevelProps = editableProps.filter((p) => !childPropIds.has(p.id));
+
+  // Build parentId → [child prop, …] lookup using live (store-fresh) prop objects
+  // so option lists stay up-to-date after every backend response.
+  const childrenByParent = {};
+  for (const [childId, parentId] of Object.entries(NESTED_PROP_CHILD_OF)) {
+    const childProp = editableProps.find((p) => p.id === childId);
+    if (childProp) {
+      if (!childrenByParent[parentId]) childrenByParent[parentId] = [];
+      childrenByParent[parentId].push(childProp);
+    }
+  }
+
   const handleToggle = (id) => {
     setOpenId((prev) => (prev === id ? null : id));
   };
 
   return (
     <div className="pcon-properties">
-      {editableProps.map((prop) => (
+      {topLevelProps.map((prop) => (
         <PropertyCollapsible
           key={prop.id}
           prop={prop}
@@ -32,13 +62,32 @@ export default function PropertySelector() {
           onToggle={() => handleToggle(prop.id)}
           onSelect={(value) => updateProperty(prop.id, value)}
           onPrefetch={(value) => prefetchProperty(prop.id, value)}
+          childProps={childrenByParent[prop.id] || []}
+          updateProperty={updateProperty}
+          prefetchProperty={prefetchProperty}
         />
       ))}
     </div>
   );
 }
 
-function PropertyCollapsible({ prop, open, onToggle, onSelect, onPrefetch }) {
+function PropertyCollapsible({
+  prop,
+  open,
+  onToggle,
+  onSelect,
+  onPrefetch,
+  childProps = [],
+  updateProperty,
+  prefetchProperty,
+}) {
+  // Nested accordion — each child can be independently open/closed.
+  // Resets when parent closes so child always starts collapsed on next open.
+  const [openChildId, setOpenChildId] = useState(null);
+
+  const handleChildToggle = (id) => {
+    setOpenChildId((prev) => (prev === id ? null : id));
+  };
 
   const isColor = prop.type === "color";
   const currentOption = prop.options.find((o) => o.value === prop.currentValue);
@@ -162,6 +211,21 @@ function PropertyCollapsible({ prop, open, onToggle, onSelect, onPrefetch }) {
               </button>
             );
           })}
+        </div>
+      )}
+
+      {open && childProps.length > 0 && (
+        <div className="pcon-prop-group__nested">
+          {childProps.map((childProp) => (
+            <PropertyCollapsible
+              key={childProp.id}
+              prop={childProp}
+              open={openChildId === childProp.id}
+              onToggle={() => handleChildToggle(childProp.id)}
+              onSelect={(value) => updateProperty(childProp.id, value)}
+              onPrefetch={(value) => prefetchProperty(childProp.id, value)}
+            />
+          ))}
         </div>
       )}
     </div>

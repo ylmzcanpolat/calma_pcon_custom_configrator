@@ -237,6 +237,34 @@
   gap: 6px;
 }
 
+/* Nested property groups — rendered inside a parent collapsible body */
+.pcon-prop-group__nested {
+  border-top: 1px solid #eee;
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pcon-prop-group__nested .pcon-prop-group {
+  border-radius: 6px;
+  border-color: #e0e0e0;
+  box-shadow: none;
+}
+
+.pcon-prop-group__nested .pcon-prop-group--open {
+  border-color: #555;
+}
+
+.pcon-prop-group__nested .pcon-prop-group__header {
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+.pcon-prop-group__nested .pcon-prop-group__label {
+  font-size: 13px;
+}
+
 /* Image / color swatch option */
 .pcon-option-swatch {
   display: flex;
