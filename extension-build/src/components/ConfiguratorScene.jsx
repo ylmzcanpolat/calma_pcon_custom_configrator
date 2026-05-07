@@ -301,9 +301,13 @@ export default function ConfiguratorScene({ canvasHeight, environmentPreset, cus
       </div>
 
       <div className="pcon-sidebar">
-        {customerLoggedIn && <PriceDisplay />}
         <PropertySelector />
-        {customerLoggedIn && <AddToCartButton />}
+        {customerLoggedIn && (
+          <div className="pcon-price-cart">
+            <PriceDisplay />
+            <AddToCartButton />
+          </div>
+        )}
       </div>
 
       {/* Faz 6 — Dev-only PerfHud overlay. Component kendi içinde flag
