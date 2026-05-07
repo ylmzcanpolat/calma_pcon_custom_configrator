@@ -3,6 +3,13 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { Box3, Vector3, MathUtils } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import useConfiguratorStore from "../store/configurator-store.js";
+import {
+  isIdbEnabled,
+  idbGet,
+  idbSet,
+  extractObjectHash,
+} from "../utils/idb-gltf-cache.js";
 
 const MAX_CACHE_ENTRIES = 5;
 const FADE_SPEED = 4;
@@ -92,26 +99,125 @@ export default function Model({ url, onProgress }) {
 
     if (onProgress) onProgress(0);
 
-    sharedLoader.load(
-      url,
-      (loaded) => {
+    // Faz 6 — Network fetch + parse fallback yolu (IDB MISS veya flag OFF).
+    // Mevcut davranış bytewise korunur — `sharedLoader.load(...)` üç-callback
+    // imzası aynen.
+    function loadFromNetwork() {
+      sharedLoader.load(
+        url,
+        (loaded) => {
+          if (cancelled) return;
+          loaded._accessTime = Date.now();
+          gltfCache.set(url, loaded);
+          evictOldestCacheEntry();
+          setGltf(loaded);
+          if (onProgress) onProgress(100);
+        },
+        (progress) => {
+          if (cancelled || !progress.total) return;
+          const percent = (progress.loaded / progress.total) * 100;
+          if (onProgress) onProgress(Math.round(percent));
+        },
+        (err) => {
+          if (cancelled) return;
+          setError(err);
+        },
+      );
+    }
+
+    // Faz 6 — IndexedDB cache (PCON_IDB_CACHE flag-gated, default OFF).
+    // Cache HIT: GLB buffer'ı diskten oku; `GLTFLoader.parse(buffer, "")` ile
+    // network'e çıkmadan parse et — refresh sonrasında bile mil-saniye
+    // seviyesinde paint.
+    // Cache MISS veya flag OFF: ham `fetch(url)` ile ArrayBuffer'ı çek,
+    // IDB'ye yaz (flag ON ise) ve parse et. Yazma fail-soft (quota → skip).
+    // Hash extract edilemezse (non-standard URL) klasik network path'ine düş.
+    const idbOn = isIdbEnabled();
+    const hash = idbOn ? extractObjectHash(url) : null;
+
+    if (!idbOn || !hash) {
+      loadFromNetwork();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    (async () => {
+      try {
+        const cachedBuffer = await idbGet(hash);
         if (cancelled) return;
-        loaded._accessTime = Date.now();
-        gltfCache.set(url, loaded);
-        evictOldestCacheEntry();
-        setGltf(loaded);
-        if (onProgress) onProgress(100);
-      },
-      (progress) => {
-        if (cancelled || !progress.total) return;
-        const percent = (progress.loaded / progress.total) * 100;
-        if (onProgress) onProgress(Math.round(percent));
-      },
-      (err) => {
+
+        if (cachedBuffer) {
+          // HIT — sahibi `parse` callback'leri sync; cancel için kontrol et.
+          sharedLoader.parse(
+            cachedBuffer,
+            "",
+            (loaded) => {
+              if (cancelled) return;
+              loaded._accessTime = Date.now();
+              gltfCache.set(url, loaded);
+              evictOldestCacheEntry();
+              setGltf(loaded);
+              if (onProgress) onProgress(100);
+            },
+            (err) => {
+              if (cancelled) return;
+              console.warn(
+                "[idb-cache] parse failed; falling back to network:",
+                err?.message || err,
+              );
+              loadFromNetwork();
+            },
+          );
+          return;
+        }
+
+        // MISS — fetch + IDB write + parse.
+        let response;
+        try {
+          response = await fetch(url);
+        } catch (err) {
+          if (cancelled) return;
+          console.warn("[idb-cache] fetch failed; using GLTFLoader fallback:", err?.message || err);
+          loadFromNetwork();
+          return;
+        }
         if (cancelled) return;
-        setError(err);
-      },
-    );
+        if (!response.ok) {
+          console.warn("[idb-cache] HTTP " + response.status + "; using GLTFLoader fallback");
+          loadFromNetwork();
+          return;
+        }
+
+        const buf = await response.arrayBuffer();
+        if (cancelled) return;
+
+        // Fire-and-forget IDB write (caller-await etmiyoruz; parse'ı bloke
+        // etmesin). idbSet zaten flag/error guard'lı.
+        idbSet(hash, buf, "gltf");
+
+        sharedLoader.parse(
+          buf,
+          "",
+          (loaded) => {
+            if (cancelled) return;
+            loaded._accessTime = Date.now();
+            gltfCache.set(url, loaded);
+            evictOldestCacheEntry();
+            setGltf(loaded);
+            if (onProgress) onProgress(100);
+          },
+          (err) => {
+            if (cancelled) return;
+            setError(err);
+          },
+        );
+      } catch (err) {
+        if (cancelled) return;
+        console.warn("[idb-cache] unexpected error; using GLTFLoader fallback:", err?.message || err);
+        loadFromNetwork();
+      }
+    })();
 
     return () => {
       cancelled = true;
@@ -141,6 +247,39 @@ export default function Model({ url, onProgress }) {
   }, [url]);
 
   const scene = useMemo(() => (gltf ? gltf.scene.clone(true) : null), [gltf]);
+
+  // Faz 4 — Sahne mount edildiğinde store'a publish et. Store'daki
+  // `updateProperty` action'ı `material-patch` response geldiğinde bu
+  // referans üzerinden `applyMaterialPatch` çağırır (GLB reload yok).
+  // gltfUrl değiştiğinde Model.jsx zaten unmount/remount olur (key={gltfUrl}
+  // — bkz. ConfiguratorScene.jsx); o yüzden scene değişimi yeni mount
+  // demektir ve sceneRef organik olarak güncellenir.
+  const setSceneRef = useConfiguratorStore((s) => s.setSceneRef);
+  useEffect(() => {
+    if (!scene || typeof setSceneRef !== "function") return;
+    setSceneRef(scene);
+  }, [scene, setSceneRef]);
+  useEffect(
+    () => () => {
+      if (typeof setSceneRef === "function") setSceneRef(null);
+    },
+    [setSceneRef],
+  );
+
+  // Faz 5 — DRACO-configured GLTFLoader instance'ını store'a publish et.
+  // GeometrySwapper sub-article GLB'lerini `gltfLoader.loadAsync(url)` ile
+  // yükler; aynı DRACOLoader binding'i sayesinde hem enriched parent
+  // GLB'leri hem de sub-article GLB'leri (gerekirse Draco-compressed)
+  // tek bir loader üzerinden çözülür. Module-level `sharedLoader` zaten
+  // singleton; setGltfLoader idempotent (subscriber'ı yok, re-render
+  // tetiklemez).
+  const setGltfLoader = useConfiguratorStore((s) => s.setGltfLoader);
+  useEffect(() => {
+    if (typeof setGltfLoader === "function") setGltfLoader(sharedLoader);
+    return () => {
+      if (typeof setGltfLoader === "function") setGltfLoader(null);
+    };
+  }, [setGltfLoader]);
 
   const restoreMaterials = useCallback((group) => {
     if (!group) return;

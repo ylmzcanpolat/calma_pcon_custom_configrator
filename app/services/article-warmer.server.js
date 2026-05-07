@@ -10,6 +10,7 @@ import { cacheGltf } from "./gltf-cache.server.js";
 import { mapProperties } from "./property-mapper.server.js";
 import { isSkippablePropertyError } from "./pcon-client.server.js";
 import { buildCartProperties } from "./cart-builder.server.js";
+import { buildSubArticleSnapshot } from "./gltf-enricher.server.js";
 
 const GATEKEEPER_URL = "https://gatekeeper.eaiws.pcon-solutions.com/v2";
 const GATEKEEPER_ID = process.env.PCON_GATEKEEPER_ID || "";
@@ -113,24 +114,43 @@ export async function warmArticle({
         log(`Layer 1: Init data... DRY-RUN (would warm)`);
       } else {
         log(`Layer 1: Init data...`);
-        const [articleData, choiceLists, gltfUrl] = await Promise.all([
-          session.basket.getArticleData(itemId, {
-            fetchCatalogImage: true,
-            enableBooleanPropType: true,
-          }),
-          session.basket.getAllChoiceLists(itemId, {
-            fetchCatalogImage: true,
-            enableBooleanPropType: true,
-          }),
-          session.basket.getExportedGeometry(itemId, ["format=GLTF"]),
-        ]);
+        // Faz 3: getItemProperties(subArticles:true) Layer 1'de paralele
+        // alındı; gltf-cache enrichment için snapshot olarak geçilecek.
+        // Hata olursa fail-soft (snapshot null) — cacheGltf raw GLB ile
+        // devam eder, eski davranış korunur.
+        const [articleData, choiceLists, gltfUrl, subArticleTreeRaw] =
+          await Promise.all([
+            session.basket.getArticleData(itemId, {
+              fetchCatalogImage: true,
+              enableBooleanPropType: true,
+            }),
+            session.basket.getAllChoiceLists(itemId, {
+              fetchCatalogImage: true,
+              enableBooleanPropType: true,
+            }),
+            session.basket.getExportedGeometry(itemId, ["format=GLTF"]),
+            session.basket
+              .getItemProperties([itemId], { subArticles: true })
+              .catch((err) => {
+                console.warn(
+                  `[article-warmer] Layer 1 sub-article snapshot failed: ${err.message}`,
+                );
+                return null;
+              }),
+          ]);
         const currency =
           articleData.currency || (await session.basket.getCurrency());
         const price =
           articleData.pdSalesPrice ?? articleData.pdPurchasePrice ?? 0;
 
         const properties = await mapProperties(articleData, choiceLists);
-        const localGltf = await cacheGltf(gltfUrl);
+        const subArticles = subArticleTreeRaw
+          ? buildSubArticleSnapshot(subArticleTreeRaw)
+          : [];
+        const localGltf = await cacheGltf(
+          gltfUrl,
+          subArticleTreeRaw ? { subArticleTree: subArticleTreeRaw } : {},
+        );
         const cartProperties = buildCartProperties(articleData, choiceLists);
 
         await cacheSet(initKey, {
@@ -141,6 +161,8 @@ export async function warmArticle({
           currency,
           itemId,
           cartProperties,
+          subArticles,
+          enriched: subArticleTreeRaw ? subArticles.length > 0 : false,
         });
         stats.warmed++;
         stats.totalCombinations++;
@@ -406,18 +428,37 @@ async function warmCombinations({
             }
           }
 
-          const [updatedData, updatedChoices, updatedGltf] = await Promise.all([
-            session.basket.getArticleData(itemId, {
-              fetchCatalogImage: true,
-              enableBooleanPropType: true,
-            }),
-            session.basket.getAllChoiceLists(itemId, {
-              fetchCatalogImage: true,
-              enableBooleanPropType: true,
-            }),
-            session.basket.getExportedGeometry(itemId, ["format=GLTF"]),
-          ]);
-          const updatedLocalGltf = await cacheGltf(updatedGltf);
+          const [updatedData, updatedChoices, updatedGltf, updatedSubArtRaw] =
+            await Promise.all([
+              session.basket.getArticleData(itemId, {
+                fetchCatalogImage: true,
+                enableBooleanPropType: true,
+              }),
+              session.basket.getAllChoiceLists(itemId, {
+                fetchCatalogImage: true,
+                enableBooleanPropType: true,
+              }),
+              session.basket.getExportedGeometry(itemId, ["format=GLTF"]),
+              // Faz 3 — sub-article snapshot enrich için. fail-soft: hata
+              // olursa raw GLB ile devam (eski warmer davranışı).
+              session.basket
+                .getItemProperties([itemId], { subArticles: true })
+                .catch((err) => {
+                  console.warn(
+                    `[article-warmer] sub-article snapshot failed for ${combo.label}: ${err.message}`,
+                  );
+                  return null;
+                }),
+            ]);
+          const updatedSubArticles = updatedSubArtRaw
+            ? buildSubArticleSnapshot(updatedSubArtRaw)
+            : [];
+          const updatedLocalGltf = await cacheGltf(
+            updatedGltf,
+            updatedSubArtRaw
+              ? { subArticleTree: updatedSubArtRaw }
+              : {},
+          );
           const updatedPrice =
             updatedData.pdSalesPrice ?? updatedData.pdPurchasePrice ?? 0;
 
@@ -437,6 +478,10 @@ async function warmCombinations({
             properties: updatedProperties,
             currency,
             cartProperties: updatedCartProperties,
+            subArticles: updatedSubArticles,
+            enriched: updatedSubArtRaw
+              ? updatedSubArticles.length > 0
+              : false,
           });
 
           warmed++;

@@ -65,6 +65,7 @@
   data-variant-id="{{ product.selected_or_first_available_variant.id }}"
   data-routes-root="{{ routes.root_url }}"
   data-add-to-cart-label="{{ block.settings.add_to_cart_label | escape }}"
+  data-customer-logged-in="{% if customer %}true{% else %}false{% endif %}"
   style="width: 100%; min-height: {{ block.settings.canvas_height }}px;"
 >
   <div class="pcon-skeleton">

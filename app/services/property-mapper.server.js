@@ -1,6 +1,24 @@
 import { cacheIcon } from "./icon-cache.server.js";
+import { buildTextureDescriptor } from "./texture-cache.server.js";
 
 const LOG_PROPERTIES = process.env.PCON_LOG_PROPERTIES !== "0";
+
+/**
+ * Faz 2 feature flag — appearance-only material patch akışı.
+ *
+ * Default: **false** (2026-05-06 live test sonrası).
+ *
+ * Update path'inde mesh-mapping çalışmadığı için material-patch geçici
+ * olarak OFF; bu sebeple option seviyesindeki `image`/`rawImage` field'ları
+ * da map'lenmez (kullanılmıyor — sidebar thumbnail'leri için zaten ayrı
+ * `icon-cache` var). Flag tekrar ON yapıldığında bu mapping de devreye
+ * girer.
+ *
+ * Açmak için: `PCON_MATERIAL_PATCH_ENABLED=true` env var.
+ */
+function isMaterialPatchEnabled() {
+  return process.env.PCON_MATERIAL_PATCH_ENABLED === "true";
+}
 
 /**
  * Property IDs (`propClass.propName`) that are hidden from the storefront
@@ -57,16 +75,31 @@ export async function mapProperties(articleData, choiceLists) {
         type = hasIcons ? "color" : "select";
       }
 
+      const materialPatchEnabled = isMaterialPatchEnabled();
+
       const options = await Promise.all(
         choices.map(async (pv) => {
           const remoteIcon = pv.largeIcon || pv.smallIcon || pv.image || null;
           const icon = remoteIcon ? await cacheIcon(remoteIcon) : null;
-          return {
+
+          const baseOption = {
             value: pv.value,
             label: pv.text,
             icon,
             available: pv.selectable !== false,
           };
+
+          // Flag OFF → mevcut shape'i koru (image/rawImage eklenmez).
+          // Flag ON → Faz 4 için texture proxy URL'ini expose et.
+          if (materialPatchEnabled && pv.image) {
+            const desc = buildTextureDescriptor(pv.image);
+            if (desc) {
+              baseOption.image = desc.proxyUrl;
+              baseOption.rawImage = desc.sourceUrl;
+            }
+          }
+
+          return baseOption;
         }),
       );
 

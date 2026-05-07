@@ -1,0 +1,4 @@
+{
+  "_comment": "Override katmani. Format: { '<articleNumber>:<manufacturerId>' | '<articleNumber>:*' | '*': { '<propClass>.<propName>': 'appearance' | 'geometry' } }. Lookup sirasi: spesifik > article-generic > '*' > heuristic/empirical sonuc.",
+  "*": {}
+}

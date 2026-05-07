@@ -9,6 +9,7 @@ import Model from "./Model.jsx";
 import PriceDisplay from "./PriceDisplay.jsx";
 import PropertySelector from "./PropertySelector.jsx";
 import AddToCartButton from "./AddToCartButton.jsx";
+import PerfHud from "./PerfHud.jsx";
 import useConfiguratorStore from "../store/configurator-store.js";
 
 class ModelErrorBoundary extends Component {
@@ -74,11 +75,21 @@ const SPINNER_C = 2 * Math.PI * SPINNER_R;
 const SPINNER_SHOW_DELAY_MS = 200;
 const SPINNER_MIN_VISIBLE_MS = 400;
 
-export default function ConfiguratorScene({ canvasHeight, environmentPreset }) {
+export default function ConfiguratorScene({ canvasHeight, environmentPreset, customerLoggedIn }) {
   const gltfUrl = useConfiguratorStore((s) => s.gltfUrl);
   const loading = useConfiguratorStore((s) => s.loading);
   const updating = useConfiguratorStore((s) => s.updating);
   const error = useConfiguratorStore((s) => s.error);
+  // Faz 4 — spinner gating. Önceki başarılı response material-patch ise
+  // sonraki tıklamada (aynı veya benzer appearance property) backend'in de
+  // material-patch döndüreceğini varsayıyoruz (classifier sticky / Redis
+  // 30 gün TTL). Bu sayede in-flight phase'inde de spinner GÖSTERMEYİZ —
+  // appearance swap genellikle <300 ms (plan §469); 200 ms grace period
+  // (SPINNER_SHOW_DELAY_MS) zaten short fast path'leri kapsıyor ama
+  // cache-MISS material-patch (~500-800 ms) için bu heuristic kritik.
+  // Yanlış tahmin (sonra full-GLB gelirse) → GLB indirme fazında
+  // isModelLoading=true zaten spinner'ı tetikler.
+  const lastResponseType = useConfiguratorStore((s) => s.lastResponseType);
 
   // Model indirme/parsing durumu — backend updating bittikten sonra GLB
   // hala indiriliyor olabilir, bu süreyi de spinner'la kapsıyoruz.
@@ -112,7 +123,17 @@ export default function ConfiguratorScene({ canvasHeight, environmentPreset }) {
     }
   }, []);
 
-  const isBusy = updating || isModelLoading;
+  // `updating` material-patch / geometry-delta path'lerinde de true olur
+  // (network round-trip) ama Model.jsx unmount/remount yok → isModelLoading
+  // false → spinner sadece updating yüzünden gözükür. Önceki response
+  // in-place patch tipiyse (material-patch veya geometry-delta) bu
+  // in-flight phase'i süresince de spinner'ı gizliyoruz — fade-in
+  // yerine targeted node swap ile <300ms paint hedefi (plan §469).
+  const updatingMasked =
+    updating &&
+    lastResponseType !== "material-patch" &&
+    lastResponseType !== "geometry-delta";
+  const isBusy = updatingMasked || isModelLoading;
 
   // Spinner görünürlük yönetimi: gösterme/gizleme timer'ları ile flicker
   // ve "spinner takılı kaldı" hissini önlüyoruz.
@@ -165,6 +186,9 @@ export default function ConfiguratorScene({ canvasHeight, environmentPreset }) {
   // Determinate mode'a sadece backend isteği bittiğinde ve gerçek bir model
   // download yüzdesi geldiğinde geçiyoruz. Backend beklerken (updating) ya
   // da progress event yokken indeterminate kalıyor — sahte ilerleme yok.
+  // `updatingMasked` material-patch in-flight'i hesaba katmıyor; doğrudan
+  // `updating` ile karşılaştırıyoruz çünkü determinate ifadesi yalnızca
+  // GLB download yüzdesi gerçekten görünüyorsa anlamlı.
   const isDeterminate =
     !updating && modelProgress != null && modelProgress > 0 && modelProgress < 100;
   const dashOffset = isDeterminate
@@ -277,10 +301,15 @@ export default function ConfiguratorScene({ canvasHeight, environmentPreset }) {
       </div>
 
       <div className="pcon-sidebar">
-        <PriceDisplay />
+        {customerLoggedIn && <PriceDisplay />}
         <PropertySelector />
-        <AddToCartButton />
+        {customerLoggedIn && <AddToCartButton />}
       </div>
+
+      {/* Faz 6 — Dev-only PerfHud overlay. Component kendi içinde flag
+          kontrolü yapıyor (PCON_PERF_HUD default OFF, `?perfhud=1` ile
+          açılır); flag OFF iken `null` döner ve DOM'a hiç eklenmez. */}
+      <PerfHud />
     </div>
   );
 }

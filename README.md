@@ -216,6 +216,26 @@ PRISMA_CLIENT_ENGINE_TYPE=binary
 
 This forces Prisma to use the binary engine mode, which runs the query engine as a separate process and can work via emulation on Windows ARM64.
 
+### Performans Feature Flag'leri (Faz 2 / Faz 5)
+
+Faz 2 (`material-patch`) ve Faz 5 (`geometry-delta`) backend kanalları
+**default ON** olarak production'da etkindir. Frontend Faz 4
+(`MaterialSwapper`/`SceneIndex`) ve Faz 5 (`GeometrySwapper`) bu
+response'ları in-place uygular; appearance ve geometry property
+değişimlerinde full GLB indirme atlanır.
+
+Acil rollback (örn. mesh-mapping bozulduğunda):
+
+```bash
+fly secrets set PCON_MATERIAL_PATCH_ENABLED=false   # Faz 2'yi kapatır
+fly secrets set PCON_GEOMETRY_DELTA_ENABLED=false   # Faz 5'i kapatır
+fly deploy
+```
+
+Her iki flag kapatıldığında davranış bytewise mevcut (Faz 0 öncesi)
+full-GLB akışına döner. Faz 0 telemetry, Faz 1 classifier ve Faz 7
+session pool flag'den bağımsızdır; her zaman aktiftir.
+
 ## Resources
 
 React Router:

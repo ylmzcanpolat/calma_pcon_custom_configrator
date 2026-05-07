@@ -12,12 +12,80 @@ import {
   getCustomerId,
   postPreorderAddLine,
 } from "../utils/preorder-intent.js";
+import { createPerfRecorder } from "../utils/perf.js";
+import { applyMaterialPatch } from "../scene/MaterialSwapper.js";
+import { applyGeometryDelta } from "../scene/GeometrySwapper.js";
 
 const responseCache = new Map();
 
 function buildPropsCacheKey(properties) {
   const sorted = Object.keys(properties).sort();
   return sorted.map((k) => k + "=" + properties[k]).join("&");
+}
+
+/* ─────────────────── Faz 6 — Feature flags & prefetch infra ────────────────
+ *
+ * Hepsi default OFF veya UX-yumuşak ON. Window/query gating sayesinde
+ * production bundle bytewise mevcut davranışı korur ta ki opt-in yapılana
+ * kadar.
+ *
+ *   PCON_HOVER_PREFETCH (default OFF) — option butonu hover'ında debounce'lu
+ *     prefetch. Backend Redis cache + frontend `responseCache` populate olur;
+ *     ardından gelen click cache HIT path'inde no-op network ile döner.
+ *   PCON_OPTIMISTIC_UI (default ON) — `updateProperty` tıklama anında
+ *     `currentValue`'yu set eder; backend cevabı geldiğinde finalize/revert
+ *     edilir. OFF ise klasik "click → wait → state" akışı.
+ *
+ * Prefetch'in EAIWS rate limit'e takılmaması için iki guard:
+ *   - PREFETCH_DEBOUNCE_MS — aynı key 200ms quiet period beklemeden hiç
+ *     fetch tetiklenmez (hızlı mouse-over her butona hit etmez).
+ *   - MAX_CONCURRENT_PREFETCH — eşzamanlı 3'ü aşmaz; tetiklenecek 4üncü
+ *     debounce timer içinde sessizce skip edilir.
+ */
+const PREFETCH_DEBOUNCE_MS = 200;
+const MAX_CONCURRENT_PREFETCH = 3;
+const prefetchInflight = new Set();
+const prefetchTimers = new Map();
+
+function isHoverPrefetchEnabled() {
+  if (typeof window === "undefined") return false;
+  if (window.__pconConfig && window.__pconConfig.hoverPrefetch === true) return true;
+  try {
+    return window.location.search.indexOf("hoverprefetch=1") !== -1;
+  } catch {
+    return false;
+  }
+}
+
+function isOptimisticUIEnabled() {
+  if (typeof window === "undefined") return true;
+  if (window.__pconConfig && window.__pconConfig.optimisticUI === false) return false;
+  try {
+    if (window.location.search.indexOf("optimisticui=0") !== -1) return false;
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+/**
+ * `<link rel="prefetch">` tag'i ekle. Browser HTTP cache'ine düşürür;
+ * gerçek tıklamada texture/image fetch network'ten değil cache'ten gelir.
+ * Idempotent: aynı href için ikinci kez çağrılırsa duplicate eklemez.
+ */
+function preloadAsset(href, asKind) {
+  if (!href || typeof document === "undefined") return;
+  try {
+    const sel = `link[rel="prefetch"][href="${href.replace(/"/g, '\\"')}"]`;
+    if (document.head.querySelector(sel)) return;
+    const link = document.createElement("link");
+    link.rel = "prefetch";
+    if (asKind) link.as = asKind;
+    link.href = href;
+    document.head.appendChild(link);
+  } catch {
+    /* ignore — non-blocking enhancement */
+  }
 }
 
 const useConfiguratorStore = create((set, get) => ({
@@ -45,7 +113,40 @@ const useConfiguratorStore = create((set, get) => ({
   cartError: null,
   cartSuccess: false,
 
+  // Faz 4 — Material-swap orchestration state.
+  //
+  // `sceneRef`           Model.jsx tarafından mount/unmount sırasında
+  //                      published THREE.Group; `applyMaterialPatch` /
+  //                      `applyGeometryDelta` bu referansı kullanır.
+  //                      Render loop'a katılmaz, sadece action içinden
+  //                      okunur — re-render tetiklemez ama zustand'da
+  //                      subscriber'ı yok zaten.
+  // `lastResponseType`   "material-patch" | "geometry-delta" | "full-gltf"
+  //                      | null. Spinner gating'inde ConfiguratorScene.jsx
+  //                      tarafından okunuyor (in-place patch sırasında
+  //                      spinner GÖSTERMEME — fade-in artifacti olmaz).
+  // `gltfLoader`         Faz 5 — Model.jsx'in DRACO-configured GLTFLoader
+  //                      singleton'ı. GeometrySwapper sub-article GLB'leri
+  //                      bu loader üzerinden yükler.
+  sceneRef: null,
+  lastResponseType: null,
+  gltfLoader: null,
+
+  // Faz 6 — Hover prefetch routing. Backend `/api/pcon/init` her property için
+  // "appearance" | "geometry" | "unknown" classification döner; prefetch
+  // action bunu kullanarak texture preload mı (appearance) yoksa backend
+  // warm fetch mi (geometry/unknown) yapacağına karar verir.
+  // Subscriber yok (sadece action içinde tüketilir) → re-render tetiklemez.
+  classifications: {},
+
   async initialize(config) {
+    // Faz 0 telemetry: configurator init zincirini ölç. Davranış değişmez.
+    const recorder = createPerfRecorder({
+      op: "initialize",
+      articleNumber: config.articleNumber,
+    });
+    recorder.mark("click");
+
     set({
       proxyBase: config.proxyBase,
       articleNumber: config.articleNumber,
@@ -65,6 +166,10 @@ const useConfiguratorStore = create((set, get) => ({
         config.articleNumber,
         config.manufacturerId,
       );
+      recorder.mark("response_server");
+      if (data && data.__perfMeta) {
+        recorder.attachServerTiming(data.__perfMeta.serverTiming);
+      }
 
       const urlProps = readUrlProperties();
       let properties = data.properties || [];
@@ -85,8 +190,14 @@ const useConfiguratorStore = create((set, get) => ({
         properties,
         itemId: data.itemId,
         cartProperties: data.cartProperties || null,
+        // Faz 6 — Backend Faz 1'de eklenen `classifications` map'i
+        // (`{ propId: "appearance" | "geometry" | "unknown" }`). Eski
+        // backend'lerle uyumluluk için yoksa boş obje düşeriz —
+        // `prefetchProperty` action'ı "unknown" path'ine sapar.
+        classifications: data.classifications || {},
         loading: false,
       });
+      recorder.mark("paint_state_set");
 
       const initProps = {};
       for (const p of properties) {
@@ -100,6 +211,9 @@ const useConfiguratorStore = create((set, get) => ({
         cartProperties: data.cartProperties || null,
       });
 
+      recorder.flushToConsole();
+      recorder.flushToWindow();
+
       const hasUrlOverrides = Object.keys(urlProps).length > 0;
       if (hasUrlOverrides) {
         get().applyUrlProperties(urlProps);
@@ -107,16 +221,31 @@ const useConfiguratorStore = create((set, get) => ({
         syncCurrentToUrl(properties);
       }
     } catch (err) {
+      recorder.mark("error");
+      recorder.flushToConsole();
+      recorder.flushToWindow();
       set({ error: err.message, loading: false });
     }
   },
 
   async applyUrlProperties(urlProps) {
     const { proxyBase, itemId, articleNumber, manufacturerId, properties: prevProperties, customIcons } = get();
+    // Faz 0 telemetry: URL'den apply edilen property setinin click→paint
+    // süresi. Davranış değişmez.
+    const recorder = createPerfRecorder({
+      op: "applyUrlProperties",
+      articleNumber,
+      propertyId: Object.keys(urlProps || {})[0] || null,
+    });
+    recorder.mark("click");
     set({ updating: true });
 
     try {
       const data = await updateProperties(proxyBase, urlProps, itemId, articleNumber, manufacturerId);
+      recorder.mark("response_server");
+      if (data && data.__perfMeta) {
+        recorder.attachServerTiming(data.__perfMeta.serverTiming);
+      }
       const merged = mergeProperties(prevProperties, data, customIcons);
 
       set({
@@ -127,7 +256,13 @@ const useConfiguratorStore = create((set, get) => ({
         cartProperties: data.cartProperties || get().cartProperties,
         updating: false,
       });
+      recorder.mark("paint_state_set");
+      recorder.flushToConsole();
+      recorder.flushToWindow();
     } catch (err) {
+      recorder.mark("error");
+      recorder.flushToConsole();
+      recorder.flushToWindow();
       set({ error: err.message, updating: false });
     }
   },
@@ -135,12 +270,35 @@ const useConfiguratorStore = create((set, get) => ({
   async updateProperty(key, value) {
     const { proxyBase, itemId, properties, articleNumber, manufacturerId, customIcons } = get();
 
+    // Faz 0 telemetry: tıklamadan paint'e (state.set) kadar her phase'i ölç.
+    // Davranış değişmez — sadece `window.__pconPerf` ring buffer'a entry
+    // push ve tek satır console log.
+    const recorder = createPerfRecorder({
+      op: "updateProperty",
+      articleNumber,
+      propertyId: key,
+    });
+    recorder.mark("click");
+
     const optimistic = properties.map((p) =>
       p.id === key ? { ...p, currentValue: value } : p,
     );
-    set({ properties: optimistic, updating: true, error: null });
 
-    syncCurrentToUrl(optimistic);
+    // Faz 6 — Optimistic UI flag-gated.
+    //   ON (default): tıklama anında `currentValue` set edilir → button
+    //     active state ANINDA render edilir; backend response'u beklenmez.
+    //     Hata path'i (catch) state'i ve URL'i `properties`/`syncCurrentToUrl`
+    //     ile geri alır + console.warn ("[store] property revert: ...").
+    //   OFF: klasik akış — sadece `updating: true`. Backend response geldikten
+    //     sonra state set edilir; revert ihtiyacı zaten yok (state hiç ileri
+    //     gitmedi).
+    const optimisticEnabled = isOptimisticUIEnabled();
+    if (optimisticEnabled) {
+      set({ properties: optimistic, updating: true, error: null });
+      syncCurrentToUrl(optimistic);
+    } else {
+      set({ updating: true, error: null });
+    }
 
     const allProps = {};
     for (const p of optimistic) {
@@ -150,21 +308,237 @@ const useConfiguratorStore = create((set, get) => ({
     const cacheKey = buildPropsCacheKey(allProps);
     const cached = responseCache.get(cacheKey);
     if (cached) {
+      recorder.mark("response_local_cache");
       const merged = mergeProperties(optimistic, cached, customIcons);
-      set({
-        gltfUrl: cached.gltfUrl,
-        price: cached.price,
-        currency: cached.currency || get().currency,
-        properties: merged,
-        cartProperties: cached.cartProperties || get().cartProperties,
-        updating: false,
-      });
+
+      // Faz 4 — local cache'de material-patch entry'si varsa yeniden uygula.
+      // Aynı combination ikinci kez seçilirse sahnede MaterialSwapper'ı tekrar
+      // çağırırız; durum aynı zaten ama state-only update yetmez (önceki
+      // tıklamada başka kombinasyona gidip geri dönülmüş olabilir).
+      if (cached.type === "material-patch") {
+        const sceneRef = get().sceneRef;
+        if (sceneRef) {
+          try {
+            await applyMaterialPatch(sceneRef, cached);
+          } catch (err) {
+            console.warn(
+              "[store] applyMaterialPatch (cache HIT) failed:",
+              err.message,
+            );
+          }
+        }
+        set({
+          // gltfUrl AYNI KALIR — material-patch GLB swap tetiklemez.
+          price: cached.price,
+          currency: cached.currency || get().currency,
+          properties: merged,
+          cartProperties: cached.cartProperties || get().cartProperties,
+          updating: false,
+          lastResponseType: "material-patch",
+        });
+      } else if (cached.type === "geometry-delta") {
+        // Faz 5 — local cache HIT'te de geometry-delta'yı sahneye uygula.
+        // Aynı kombinasyon iki kez seçilirse (örn. user A→B→A toggling)
+        // ikinci tıklamada sahne hala A state'ine dönmemiş olabilir;
+        // delta'yı tekrar uygulayarak senkronize ederiz.
+        const sceneRef = get().sceneRef;
+        const gltfLoader = get().gltfLoader;
+        if (sceneRef && gltfLoader) {
+          try {
+            await applyGeometryDelta(sceneRef, cached, gltfLoader);
+          } catch (err) {
+            console.warn(
+              "[store] applyGeometryDelta (cache HIT) failed:",
+              err.message,
+            );
+          }
+        }
+        set({
+          // gltfUrl AYNI KALIR — geometry-delta full GLB swap tetiklemez.
+          price: cached.price,
+          currency: cached.currency || get().currency,
+          properties: merged,
+          cartProperties: cached.cartProperties || get().cartProperties,
+          updating: false,
+          lastResponseType: "geometry-delta",
+        });
+      } else {
+        set({
+          gltfUrl: cached.gltfUrl,
+          price: cached.price,
+          currency: cached.currency || get().currency,
+          properties: merged,
+          cartProperties: cached.cartProperties || get().cartProperties,
+          updating: false,
+          lastResponseType: "full-gltf",
+        });
+      }
+      recorder.mark("paint_state_set");
+      recorder.flushToConsole();
+      recorder.flushToWindow();
       return;
     }
 
     try {
-      const data = await updateProperties(proxyBase, allProps, itemId, articleNumber, manufacturerId);
+      // Faz 4 — `dirtyKeys: [key]` body'ye eklenir. Backend Faz 2 bunu
+      // appearance/geometry classification için kullanır; flag-OFF iken
+      // zararsız (Array.isArray + length kontrolüyle yutulur).
+      const data = await updateProperties(
+        proxyBase,
+        allProps,
+        itemId,
+        articleNumber,
+        manufacturerId,
+        [key],
+      );
+      recorder.mark("response_server");
+      if (data && data.__perfMeta) {
+        recorder.attachServerTiming(data.__perfMeta.serverTiming);
+      }
 
+      // ─────────────── Faz 4: Response type branching ───────────────
+      //
+      // Backend `type === "material-patch"` döndüyse:
+      //   * gltfUrl AYNI kalır (Model.jsx unmount tetiklenmez, fade yok).
+      //   * MaterialSwapper sahnedeki mesh'lere in-place patch uygular.
+      //   * `lastResponseType: "material-patch"` set edilir; spinner gating
+      //     bunu okur (ConfiguratorScene.jsx).
+      //
+      // Aksi halde (eski full-GLB shape veya `type` field'ı yok):
+      //   * Mevcut akış aynen — gltfUrl swap, Model.jsx remount.
+      //   * Geriye uyumluluk: eski cache entry'leri ve flag-OFF iken
+      //     bytewise mevcut davranış.
+      if (data && data.type === "material-patch") {
+        const sceneRef = get().sceneRef;
+        if (sceneRef) {
+          try {
+            await applyMaterialPatch(sceneRef, data);
+          } catch (err) {
+            console.warn("[store] applyMaterialPatch failed:", err.message);
+            // Görsel uygulama başarısız oldu — state update'i yine de
+            // yapıyoruz ki price/cartProperties tutarlı kalsın (kabul
+            // kriteri 4: kırılmasın). Kullanıcı ya bir sonraki tıklamada
+            // toparlanır ya da geometry-property tıklayıp full-GLB akışına
+            // geçer. Hata UI'a yansıtılmaz; sadece console.
+          }
+        } else {
+          console.warn(
+            "[store] material-patch received but no sceneRef; skipping in-place swap",
+          );
+        }
+
+        // material-patch response'u local cache'e koy. `type` field'ı
+        // kalır → tekrar HIT olduğunda yukarıdaki cache HIT branching
+        // doğru yola düşer.
+        responseCache.set(cacheKey, {
+          type: "material-patch",
+          patches: data.patches,
+          price: data.price,
+          currency: data.currency,
+          properties: data.properties,
+          cartProperties: data.cartProperties || null,
+        });
+
+        const merged = mergeProperties(optimistic, data, customIcons);
+        set({
+          // gltfUrl AYNI KALIR — Model.jsx unmount/remount tetiklemesin.
+          price: data.price,
+          currency: data.currency || get().currency,
+          properties: merged,
+          cartProperties: data.cartProperties || get().cartProperties,
+          updating: false,
+          lastResponseType: "material-patch",
+        });
+        recorder.mark("paint_state_set");
+        recorder.flushToConsole();
+        recorder.flushToWindow();
+        return;
+      }
+
+      // ─────────────── Faz 5: geometry-delta branching ─────────────────
+      //
+      // Backend `type === "geometry-delta"` döndüyse:
+      //   * gltfUrl AYNI kalır (Model.jsx unmount tetiklenmez, fade yok).
+      //   * GeometrySwapper sadece değişen sub-article'ları sahnede
+      //     remove/replace/add eder; tüm article re-render edilmez.
+      //   * `lastResponseType: "geometry-delta"` → spinner gating
+      //     (ConfiguratorScene.jsx).
+      //
+      // Görsel apply başarısız olursa `error` state'e geçeriz ve
+      // spinner mask'i kalkar — kullanıcı bir sonraki tıklamada
+      // (full-GLB tetikleyebilecek bir property) sahneyi temizler.
+      // gltfUrl swap manuel yapmıyoruz çünkü backend zaten delta gönderdi
+      // (full-GLB istemi yapmak için yeni bir update tetiklemek gerek;
+      // o sorumluluk frontend'e dahil değil — UX bozulmaz, kullanıcı
+      // başka bir property tıkladığında akış normalleşir).
+      if (data && data.type === "geometry-delta") {
+        const sceneRef = get().sceneRef;
+        const gltfLoader = get().gltfLoader;
+        let applyErr = null;
+        if (sceneRef && gltfLoader) {
+          try {
+            await applyGeometryDelta(sceneRef, data, gltfLoader);
+          } catch (err) {
+            applyErr = err;
+            console.warn("[store] applyGeometryDelta failed:", err.message);
+          }
+        } else {
+          console.warn(
+            "[store] geometry-delta received but no sceneRef/gltfLoader; skipping in-place swap",
+          );
+        }
+
+        const merged = mergeProperties(optimistic, data, customIcons);
+
+        if (applyErr) {
+          // GeometrySwapper'ın total fail throw'u (tüm load'lar başarısız).
+          // Backend zaten delta gönderdi — full-GLB istemi tetikleyemeyiz
+          // (yeni network round-trip gerekecekti). Error state'i set edip
+          // kullanıcıya "Failed to load 3D model" banner'ı gösteriyoruz;
+          // kullanıcı sayfayı yenileyebilir veya başka bir property
+          // tıklayıp full-GLB akışını tetikleyebilir.
+          // Cache'e KOYMUYORUZ — bir sonraki tıklama bozuk delta'yı tekrar
+          // çekmesin; backend'den fresh isteyelim.
+          set({
+            properties: merged,
+            updating: false,
+            error: applyErr.message,
+          });
+          recorder.mark("error");
+          recorder.flushToConsole();
+          recorder.flushToWindow();
+          return;
+        }
+
+        // Başarı: cache'e koy, gltfUrl AYNI kalır (kabul kriteri 1).
+        responseCache.set(cacheKey, {
+          type: "geometry-delta",
+          changedSubArticles: data.changedSubArticles,
+          addedSubArticles: data.addedSubArticles,
+          removedSubArticles: data.removedSubArticles,
+          subArticles: data.subArticles,
+          price: data.price,
+          currency: data.currency,
+          properties: data.properties,
+          cartProperties: data.cartProperties || null,
+        });
+
+        set({
+          price: data.price,
+          currency: data.currency || get().currency,
+          properties: merged,
+          cartProperties: data.cartProperties || get().cartProperties,
+          updating: false,
+          lastResponseType: "geometry-delta",
+          error: null,
+        });
+        recorder.mark("paint_state_set");
+        recorder.flushToConsole();
+        recorder.flushToWindow();
+        return;
+      }
+
+      // ── Full-GLB yolu (mevcut davranış) ─────────────────────────────
       responseCache.set(cacheKey, {
         gltfUrl: data.gltfUrl,
         price: data.price,
@@ -183,10 +557,183 @@ const useConfiguratorStore = create((set, get) => ({
         properties: merged,
         cartProperties: data.cartProperties || get().cartProperties,
         updating: false,
+        lastResponseType: "full-gltf",
       });
+      recorder.mark("paint_state_set");
+      recorder.flushToConsole();
+      recorder.flushToWindow();
     } catch (err) {
+      recorder.mark("error");
+      recorder.flushToConsole();
+      recorder.flushToWindow();
+      // Faz 6 — Optimistic UI revert: original `properties` snapshot'ına
+      // geri dön + URL params'ı senkronize et. Flag OFF iken state hiç
+      // değişmediği için revert no-op'a denk düşer ama yine de URL'i
+      // garantili senkronize tutuyoruz (önceki bir başka updateProperty
+      // çağrısı URL'e yazmış olabilir).
+      if (optimisticEnabled) {
+        console.warn(
+          "[store] property revert: " + key + " → " + value + " (" + err.message + ")",
+        );
+        syncCurrentToUrl(properties);
+      }
       set({ properties, updating: false, error: err.message });
     }
+  },
+
+  /**
+   * Faz 4 — Model.jsx tarafından sahne mount/unmount sırasında çağrılır.
+   * `applyMaterialPatch` çağrısında `get().sceneRef` üzerinden okunur.
+   * Subscriber'ı yok (sadece action içinde tüketilir) → re-render
+   * tetiklemez.
+   */
+  setSceneRef(scene) {
+    set({ sceneRef: scene || null });
+  },
+
+  /**
+   * Faz 5 — Model.jsx tarafından mount/unmount sırasında çağrılır.
+   * GeometrySwapper sub-article GLB'lerini bu loader üzerinden yükler.
+   * Subscriber yok → re-render tetiklemez.
+   */
+  setGltfLoader(loader) {
+    set({ gltfLoader: loader || null });
+  },
+
+  /**
+   * Faz 6 — Hover prefetch.
+   *
+   * `PropertySelector.jsx` option butonuna mouse-enter / focus geldiğinde
+   * çağrılır. Plan §539-541, §566.
+   *
+   * Davranış (PCON_HOVER_PREFETCH flag-gated, default OFF):
+   *   1. Same value veya non-existent prop → no-op.
+   *   2. 200ms debounce: aynı `propId:value` key'i hızlı tekrar tetiklerse
+   *      önceki timer iptal, yenisi kurulur (mouse hızlıca üstüden geçince
+   *      hiç fetch yapılmaz).
+   *   3. Concurrent guard: 3 in-flight prefetch'ten fazlasına izin yok.
+   *      EAIWS rate limit'e takılmamak için (plan §566).
+   *   4. Classification dispatch:
+   *        appearance → `<link rel="prefetch">` ile swatch icon URL'i
+   *          browser HTTP cache'ine alınır + backend warm fetch
+   *          (cache HIT path'inde gerçek tıklama no-op'a düşer).
+   *        geometry / unknown → backend warm fetch.
+   *   5. Backend response **state'e merge edilmez**; sadece module-level
+   *      `responseCache` Map'ine yazılır. Gerçek tıklama (`updateProperty`)
+   *      cache HIT path'ini bulur ve network'e çıkmaz → kabul kriteri 1.
+   *
+   * Hata path'i: console.warn + sessizce skip; UI/state etkilenmez.
+   */
+  prefetchProperty: async (propId, value) => {
+    if (!isHoverPrefetchEnabled()) return;
+    if (!propId || value === undefined || value === null) return;
+
+    const prop = get().properties.find((p) => p.id === propId);
+    if (!prop) return;
+    if (prop.currentValue === value) return;
+    const opt = prop.options.find((o) => o.value === value);
+    if (!opt || opt.available === false) return;
+
+    const key = propId + ":" + value;
+
+    if (prefetchTimers.has(key)) {
+      clearTimeout(prefetchTimers.get(key));
+    }
+
+    const timer = setTimeout(async () => {
+      prefetchTimers.delete(key);
+
+      if (prefetchInflight.has(key)) return;
+      if (prefetchInflight.size >= MAX_CONCURRENT_PREFETCH) return;
+
+      const {
+        properties: latest,
+        proxyBase,
+        itemId,
+        articleNumber,
+        manufacturerId,
+        classifications,
+      } = get();
+
+      // Stale check — properties değişmiş olabilir; kullanıcı zaten o
+      // değere geçmişse anlamı yok.
+      const liveProp = latest.find((p) => p.id === propId);
+      if (!liveProp || liveProp.currentValue === value) return;
+
+      const allProps = {};
+      for (const p of latest) {
+        if (p.currentValue) allProps[p.id] = p.currentValue;
+      }
+      allProps[propId] = value;
+
+      const cacheKey = buildPropsCacheKey(allProps);
+      // Already cached frontend-side — kullanıcı tıklasa bile network
+      // request olmayacak. Skip.
+      if (responseCache.has(cacheKey)) return;
+
+      const cls = (classifications && classifications[propId]) || "unknown";
+
+      // Appearance → swatch icon'u browser cache'ine düşür. Hafif (KB
+      // seviyesinde) ama gerçek material baseColor texture'ını backend
+      // material-patch response'unda alacağımız için orayı da prefetch
+      // yapmak istiyoruz; backend warm fetch onu hallediyor.
+      if (cls === "appearance" && opt.icon) {
+        preloadAsset(opt.icon, "image");
+      }
+
+      prefetchInflight.add(key);
+      try {
+        const data = await updateProperties(
+          proxyBase,
+          allProps,
+          itemId,
+          articleNumber,
+          manufacturerId,
+          [propId],
+        );
+        // Response'u state'e merge ETMİYORUZ — kullanıcı henüz tıklamadı.
+        // Sadece `responseCache`'e yazıyoruz ki bir sonraki gerçek tıklama
+        // cache HIT path'ine düşsün (kabul kriteri 1: yeni network request
+        // görünmemeli).
+        if (data && data.type === "material-patch") {
+          responseCache.set(cacheKey, {
+            type: "material-patch",
+            patches: data.patches,
+            price: data.price,
+            currency: data.currency,
+            properties: data.properties,
+            cartProperties: data.cartProperties || null,
+          });
+        } else if (data && data.type === "geometry-delta") {
+          responseCache.set(cacheKey, {
+            type: "geometry-delta",
+            changedSubArticles: data.changedSubArticles,
+            addedSubArticles: data.addedSubArticles,
+            removedSubArticles: data.removedSubArticles,
+            subArticles: data.subArticles,
+            price: data.price,
+            currency: data.currency,
+            properties: data.properties,
+            cartProperties: data.cartProperties || null,
+          });
+        } else if (data) {
+          responseCache.set(cacheKey, {
+            gltfUrl: data.gltfUrl,
+            price: data.price,
+            currency: data.currency,
+            properties: data.properties,
+            validOptions: data.validOptions,
+            cartProperties: data.cartProperties || null,
+          });
+        }
+      } catch (err) {
+        console.warn("[prefetch] failed:", err?.message || err);
+      } finally {
+        prefetchInflight.delete(key);
+      }
+    }, PREFETCH_DEBOUNCE_MS);
+
+    prefetchTimers.set(key, timer);
   },
 
   setQuantity(qty) {

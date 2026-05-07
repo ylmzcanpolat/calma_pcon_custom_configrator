@@ -107,14 +107,17 @@
 
 /* Price Display */
 .pcon-price {
-  background: #f8f8f8;
-  border-radius: 8px;
+  background: #fff;
+  /* border-radius: 8px; */
   padding: 16px;
   font-size: 24px;
   font-weight: 700;
   color: #1a1a1a;
   text-align: center;
-  border: 1px solid #eee;
+  /* border: 1px solid #eee; */
+  position: sticky;
+  top: -23px;
+  z-index: 2;
 }
 
 /* Property Selector Panel */

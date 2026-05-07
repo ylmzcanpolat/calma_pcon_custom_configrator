@@ -2,6 +2,7 @@ import { getPconClient } from "./pcon-client.server.js";
 import { generateCacheKey, cacheGet, cacheSet } from "./redis-client.server.js";
 import { cacheGltf } from "./gltf-cache.server.js";
 import { isCacheWarmingEnabled } from "./cache-warming-config.server.js";
+import { buildSubArticleSnapshot } from "./gltf-enricher.server.js";
 
 const warmingInProgress = new Set();
 
@@ -67,7 +68,27 @@ export function warmCacheInBackground(articleNumber, manufacturerId, properties)
             });
 
             const data = await client.setPropertyValue(itemId, propertyList);
-            const localGltfUrl = await cacheGltf(data.gltfUrl);
+
+            // Faz 3 — sub-article snapshot enrich için. fail-soft: hata
+            // olursa raw GLB ile devam (eski davranış).
+            let subArticleTreeRaw = null;
+            try {
+              subArticleTreeRaw = await client.getItemProperties(itemId, {
+                subArticles: true,
+              });
+            } catch (err) {
+              console.warn(
+                `[cache-warmer] sub-article snapshot failed for ${prop.id}=${opt.value}: ${err.message}`,
+              );
+            }
+            const subArticles = subArticleTreeRaw
+              ? buildSubArticleSnapshot(subArticleTreeRaw)
+              : [];
+
+            const localGltfUrl = await cacheGltf(
+              data.gltfUrl,
+              subArticleTreeRaw ? { subArticleTree: subArticleTreeRaw } : {},
+            );
 
             await cacheSet(cacheKey, {
               price: data.price,
@@ -76,6 +97,8 @@ export function warmCacheInBackground(articleNumber, manufacturerId, properties)
               properties: data.properties,
               currency: data.currency,
               cartProperties: data.cartProperties || null,
+              subArticles,
+              enriched: subArticleTreeRaw ? subArticles.length > 0 : false,
             });
 
             warmed++;

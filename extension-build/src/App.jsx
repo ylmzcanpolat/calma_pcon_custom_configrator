@@ -32,6 +32,7 @@ function Configurator({ config }) {
     <ConfiguratorScene
       canvasHeight={config.canvasHeight}
       environmentPreset={config.environmentPreset}
+      customerLoggedIn={config.customerLoggedIn}
     />
   );
 }

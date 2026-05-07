@@ -19,6 +19,7 @@
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
     "warm-cache": "node --experimental-vm-modules scripts/warm-cache.js",
+    "classify": "node --experimental-vm-modules scripts/classify-article.js",
     "vite": "vite",
     "typecheck": "react-router typegen && tsc --noEmit"
   },

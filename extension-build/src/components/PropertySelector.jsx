@@ -4,6 +4,10 @@ import useConfiguratorStore from "../store/configurator-store.js";
 export default function PropertySelector() {
   const properties = useConfiguratorStore((s) => s.properties);
   const updateProperty = useConfiguratorStore((s) => s.updateProperty);
+  // Faz 6 — Hover/focus prefetch. Action store içinde flag-gated
+  // (PCON_HOVER_PREFETCH default OFF) → flag kapalıyken no-op döner;
+  // component flag bilmek zorunda değil.
+  const prefetchProperty = useConfiguratorStore((s) => s.prefetchProperty);
 
   // Accordion davranışı — aynı anda en fazla bir grup açık. `null` hepsi kapalı.
   // Açık olan gruba tekrar tıklanırsa kapanır; başka bir gruba tıklanırsa
@@ -27,13 +31,14 @@ export default function PropertySelector() {
           open={openId === prop.id}
           onToggle={() => handleToggle(prop.id)}
           onSelect={(value) => updateProperty(prop.id, value)}
+          onPrefetch={(value) => prefetchProperty(prop.id, value)}
         />
       ))}
     </div>
   );
 }
 
-function PropertyCollapsible({ prop, open, onToggle, onSelect }) {
+function PropertyCollapsible({ prop, open, onToggle, onSelect, onPrefetch }) {
 
   const isColor = prop.type === "color";
   const currentOption = prop.options.find((o) => o.value === prop.currentValue);
@@ -43,6 +48,17 @@ function PropertyCollapsible({ prop, open, onToggle, onSelect }) {
     if (opt.value !== prop.currentValue) {
       onSelect(opt.value);
     }
+  };
+
+  // Faz 6 — Hover/focus prefetch tetikleyici. Disabled veya zaten seçili
+  // option için ilgisiz çağrı; store action zaten guard ediyor ama burada
+  // da erken dönüş ile gereksiz function call'u eliyoruz (klavye kullanıcısı
+  // her option'a focus geçirebilir → çok sık tetiklenir).
+  const handleHover = (opt) => {
+    if (!onPrefetch) return;
+    if (!opt.available) return;
+    if (opt.value === prop.currentValue) return;
+    onPrefetch(opt.value);
   };
 
   const groupClassName = [
@@ -106,6 +122,8 @@ function PropertyCollapsible({ prop, open, onToggle, onSelect }) {
                   disabled={!opt.available}
                   title={opt.label}
                   onClick={() => handleSelect(opt)}
+                  onMouseEnter={() => handleHover(opt)}
+                  onFocus={() => handleHover(opt)}
                 >
                   <span
                     className="pcon-option-swatch__thumb"
@@ -137,6 +155,8 @@ function PropertyCollapsible({ prop, open, onToggle, onSelect }) {
                 disabled={!opt.available}
                 title={opt.label}
                 onClick={() => handleSelect(opt)}
+                onMouseEnter={() => handleHover(opt)}
+                onFocus={() => handleHover(opt)}
               >
                 {opt.label}
               </button>

@@ -37,6 +37,33 @@ async function getClient() {
   return connectionPromise;
 }
 
+/**
+ * Bilinen cache key prefix'leri. `generateCacheKey` herhangi bir string
+ * prefix'i kabul eder ama operatör görünürlüğü için (stats, debug, future
+ * cleanup task'ları) tüm aktif prefix'ler tek bir yerde dokümante edilir.
+ *
+ *   - `init`           → Faz 0: ilk article load cache'i.
+ *   - `update`         → Faz 0: full property update + GLB cache'i.
+ *   - `material-patch` → Faz 2: appearance-only property değişimi için
+ *                        küçük JSON patch cache'i (GLB üretmez).
+ */
+export const CACHE_PREFIXES = Object.freeze({
+  INIT: "init",
+  UPDATE: "update",
+  MATERIAL_PATCH: "material-patch",
+});
+
+/**
+ * Global cache version. Faz 2 production'a alınırken `mapProperties` çıktı
+ * shape'i değişti (`option.image` / `option.rawImage` field'ları eklendi).
+ * Eski entry'ler bu field'lar olmadan yazılmış olabilir; bunları otomatik
+ * bypass etmek için key prefix'ine version koyulur.
+ *
+ * Bump kuralı: backend'in cache'lediği herhangi bir response shape'i
+ * değişirse (init/update/material-patch/geometry-delta) bu sayıyı artır.
+ */
+const CACHE_SCHEMA_VERSION = 2;
+
 export function generateCacheKey(prefix, data) {
   const sorted = Object.keys(data)
     .sort()
@@ -45,7 +72,7 @@ export function generateCacheKey(prefix, data) {
       return acc;
     }, {});
   const hash = createHash("md5").update(JSON.stringify(sorted)).digest("hex");
-  return `pcon:${prefix}:${hash}`;
+  return `pcon:v${CACHE_SCHEMA_VERSION}:${prefix}:${hash}`;
 }
 
 export async function cacheGet(key) {
@@ -86,20 +113,44 @@ export async function isRedisHealthy() {
 export async function getRedisCacheStats() {
   try {
     const redis = await getClient();
-    if (!redis) return { connected: false, totalKeys: 0, initKeys: 0, updateKeys: 0 };
+    if (!redis)
+      return {
+        connected: false,
+        totalKeys: 0,
+        initKeys: 0,
+        updateKeys: 0,
+        materialPatchKeys: 0,
+      };
 
     const allKeys = await redis.keys("pcon:*");
-    const initKeys = allKeys.filter((k) => k.startsWith("pcon:init:"));
-    const updateKeys = allKeys.filter((k) => k.startsWith("pcon:update:"));
+    const versionedPrefix = `pcon:v${CACHE_SCHEMA_VERSION}:`;
+    const initKeys = allKeys.filter((k) =>
+      k.startsWith(`${versionedPrefix}init:`),
+    );
+    const updateKeys = allKeys.filter((k) =>
+      k.startsWith(`${versionedPrefix}update:`),
+    );
+    // Faz 2: material-patch prefix ayrı bucket — appearance-only patch
+    // cache hit oranını init/update'ten ayırt edebilmek için.
+    const materialPatchKeys = allKeys.filter((k) =>
+      k.startsWith(`${versionedPrefix}material-patch:`),
+    );
 
     return {
       connected: true,
       totalKeys: allKeys.length,
       initKeys: initKeys.length,
       updateKeys: updateKeys.length,
+      materialPatchKeys: materialPatchKeys.length,
     };
   } catch {
-    return { connected: false, totalKeys: 0, initKeys: 0, updateKeys: 0 };
+    return {
+      connected: false,
+      totalKeys: 0,
+      initKeys: 0,
+      updateKeys: 0,
+      materialPatchKeys: 0,
+    };
   }
 }
 

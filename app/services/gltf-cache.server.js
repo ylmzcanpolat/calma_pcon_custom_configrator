@@ -2,11 +2,23 @@ import { mkdir, writeFile, access, readdir, stat, unlink } from "fs/promises";
 import { resolve } from "path";
 import { createHash } from "crypto";
 import { cacheGet, cacheSet } from "./redis-client.server.js";
+import {
+  enrichGlbWithSubArticleMetadata,
+  buildSubArticleSnapshot,
+} from "./gltf-enricher.server.js";
 
 const LOCAL_GLTF_PREFIX = "/apps/pcon-configurator/gltf/";
 
 const GLTF_CACHE_DIR = resolve(process.cwd(), ".cache/gltf");
 const MAX_CACHE_SIZE_MB = parseInt(process.env.GLTF_CACHE_MAX_SIZE_MB || "5000", 10);
+
+// Faz 3 — enriched GLB için ayrı dosya suffix'i. Aynı objectHash için
+// hem ham/draco-compressed (`<hash>.glb`) hem enriched (`<hash>.enriched.glb`)
+// versiyonlar yan yana yaşayabilir. Eski cache entry'leri kırılmasın diye
+// (`cached.gltfUrl` raw'ı işaret ediyorsa frontend hâlâ alır), yeni MISS
+// path'i enriched'i tercih eder ve Redis entry'sine `enriched: true` yazar.
+const ENRICHED_SUFFIX = ".enriched.glb";
+const RAW_SUFFIX = ".glb";
 
 let dirReady = false;
 let compressionAvailable = null;
@@ -86,17 +98,60 @@ async function compressGltfBuffer(buffer) {
 
 const inflight = new Map();
 
-export async function cacheGltf(remoteUrl, { compress = true } = {}) {
+/**
+ * Verilen `subArticleTree`'yi flat-friendly snapshot'a çevirir; flat zaten
+ * geldiyse aynen döndürür. Hem `cacheGltf` (enrich opsiyonu) hem üst
+ * route'lar için aynı normalize lojiği.
+ */
+function _normalizeSubArticleSnapshot(subArticleTree) {
+  if (!Array.isArray(subArticleTree) || subArticleTree.length === 0) {
+    return [];
+  }
+  const first = subArticleTree[0];
+  if (first && typeof first === "object" && "article" in first) {
+    return buildSubArticleSnapshot(subArticleTree);
+  }
+  if (
+    first &&
+    typeof first === "object" &&
+    ("id" in first || "geometryId" in first || "path" in first)
+  ) {
+    return subArticleTree;
+  }
+  return [];
+}
+
+/**
+ * @param {string} remoteUrl pCon CDN GLB URL'i.
+ * @param {object} [opts]
+ * @param {boolean} [opts.compress=true] Draco compression uygula.
+ * @param {Array}   [opts.subArticleTree=null] Faz 3 — verilirse GLB
+ *   `gltf-enricher` ile node.extras enrich edilir, dosya `<hash>.enriched.glb`
+ *   suffix'iyle yazılır. Mevcut `<hash>.glb` (raw/draco) entry'sini etkilemez.
+ *   Format: ham EAIWS `getItemProperties` çıktısı veya `buildSubArticleSnapshot`
+ *   çıktısı; ikisi de kabul edilir.
+ * @returns {Promise<string|null>} Local proxy URL veya hata durumunda
+ *   orijinal pCon URL (graceful degradation).
+ */
+export async function cacheGltf(
+  remoteUrl,
+  { compress = true, subArticleTree = null } = {},
+) {
   if (!remoteUrl) return null;
 
   // Eğer URL zaten local proxy URL ise (warmer veya cache HIT'ten gelen)
-  // başka iş yapma.
+  // başka iş yapma. Enriched flow için bile local URL geldiyse re-enrich
+  // gereksiz; caller `cached.enriched` flag'ini ayrıca takip eder.
   if (remoteUrl.startsWith(LOCAL_GLTF_PREFIX)) {
     return remoteUrl;
   }
 
+  const snapshot = _normalizeSubArticleSnapshot(subArticleTree);
+  const wantEnrich = snapshot.length > 0;
+
   const hash = resolveCacheHash(remoteUrl);
-  const filename = hash + ".glb";
+  const suffix = wantEnrich ? ENRICHED_SUFFIX : RAW_SUFFIX;
+  const filename = hash + suffix;
   const localPath = resolve(GLTF_CACHE_DIR, filename);
   const publicUrl = LOCAL_GLTF_PREFIX + filename;
 
@@ -108,9 +163,11 @@ export async function cacheGltf(remoteUrl, { compress = true } = {}) {
   }
 
   // Aynı object aynı anda iki route tarafından istenirse (örn. cache miss +
-  // warmer eşzamanlı), tek bir indirme yapılsın.
-  if (inflight.has(hash)) {
-    return inflight.get(hash);
+  // warmer eşzamanlı), tek bir indirme yapılsın. Inflight key dosya
+  // adıdır — enriched ve raw versiyonlar yan yana inflight olabilir.
+  const inflightKey = filename;
+  if (inflight.has(inflightKey)) {
+    return inflight.get(inflightKey);
   }
 
   const task = (async () => {
@@ -124,7 +181,29 @@ export async function cacheGltf(remoteUrl, { compress = true } = {}) {
 
       let buffer = Buffer.from(await res.arrayBuffer());
 
-      if (compress && (await checkCompressionAvailable())) {
+      if (wantEnrich) {
+        // Faz 3 — enrich + Draco compress tek geçişte (gltf-enricher
+        // `processGlb` customStages + dracoOptions). Enrich fail-soft;
+        // yine de hash dosyasını yaz ki eski cache entry'leri etkilemesin.
+        const enrichRes = await enrichGlbWithSubArticleMetadata(
+          buffer,
+          snapshot,
+          { compressDraco: compress && (await checkCompressionAvailable()) },
+        );
+        buffer = enrichRes.buffer;
+        if (enrichRes.enriched) {
+          console.log(
+            `[gltf-cache] enriched ${hash}.enriched.glb — ` +
+              `${enrichRes.nodesWritten}/${enrichRes.subArticleCount} node extras written`,
+          );
+        } else {
+          // Enrich başarısız → raw GLB'yi enriched suffix'le yine yazıyoruz
+          // ki HIT'lerde aynı yola döneriz; ama log seviyesi: warn.
+          console.warn(
+            `[gltf-cache] enrichment skipped for ${hash}; writing raw GLB to enriched path`,
+          );
+        }
+      } else if (compress && (await checkCompressionAvailable())) {
         buffer = await compressGltfBuffer(buffer);
       }
 
@@ -139,11 +218,11 @@ export async function cacheGltf(remoteUrl, { compress = true } = {}) {
       console.error("[gltf-cache] Failed to cache GLTF:", err.message);
       return remoteUrl;
     } finally {
-      inflight.delete(hash);
+      inflight.delete(inflightKey);
     }
   })();
 
-  inflight.set(hash, task);
+  inflight.set(inflightKey, task);
   return task;
 }
 
@@ -157,30 +236,62 @@ export async function cacheGltf(remoteUrl, { compress = true } = {}) {
  * ile hızlıca cevap döner; arka planda local cache hazırlanır ve Redis entry
  * yükseltilir; bir sonraki istek artık local URL alır.
  *
+ * Faz 3: opsiyonel `subArticleTree` parametresi geçilirse, GLB
+ * `gltf-enricher` ile node.extras enrich edilip `<hash>.enriched.glb`
+ * dosyasına yazılır; Redis entry'sine `enriched: true` flag'i de eklenir.
+ * Bu işlem aynı background task içinde yapıldığı için ilk MISS response'unu
+ * BLOKLAMAZ (plan §418 KK3). subArticleTree verilmezse mevcut davranış
+ * korunur (Draco compress + `<hash>.glb` filename).
+ *
  * Race condition koruması: cart-payload veya başka bir route bu key'i bizim
  * background tamamlamamızdan önce güncellerse, en son entry üzerine yazıyoruz
- * (gltfUrl alanını local'e çeviriyoruz, diğer alanları olduğu gibi koruyoruz).
+ * (gltfUrl + (varsa) enriched alanlarını local'e çeviriyoruz, diğer alanları
+ * olduğu gibi koruyoruz). Eski cache entry'ler kırılmaz: enrich fail olursa
+ * `latest.enriched` set edilmez.
+ *
+ * @param {string} cacheKey
+ * @param {string} sourceUrl pCon CDN GLB URL'i.
+ * @param {Array} [subArticleTree=null] Faz 3 — verilirse enrich pipeline'a
+ *   geçilir. Format: ham EAIWS `getItemProperties` çıktısı veya
+ *   `buildSubArticleSnapshot` çıktısı.
  */
-export function upgradeCacheEntryWithLocalGltf(cacheKey, sourceUrl) {
+export function upgradeCacheEntryWithLocalGltf(
+  cacheKey,
+  sourceUrl,
+  subArticleTree = null,
+) {
   if (!cacheKey || !sourceUrl) return;
   if (sourceUrl.startsWith(LOCAL_GLTF_PREFIX)) return;
 
-  cacheGltf(sourceUrl)
+  const wantEnrich =
+    Array.isArray(subArticleTree) && subArticleTree.length > 0;
+
+  cacheGltf(sourceUrl, wantEnrich ? { subArticleTree } : {})
     .then(async (localUrl) => {
       if (!localUrl || !localUrl.startsWith(LOCAL_GLTF_PREFIX)) return;
 
       try {
         const latest = await cacheGet(cacheKey);
         if (!latest) return;
-        // Idempotency: başka bir request bizi yenmiş ve zaten local URL
-        // yazılmışsa tekrar yazmaya gerek yok.
-        if (latest.gltfUrl?.startsWith(LOCAL_GLTF_PREFIX)) return;
 
-        await cacheSet(cacheKey, {
+        // Idempotency: başka bir request bizi yenmiş ve zaten **aynı tipte**
+        // (raw vs enriched) local URL yazılmışsa tekrar yazmaya gerek yok.
+        // Enriched isteniyor + mevcut raw local ise üzerine yazıyoruz
+        // (enriched URL daha "güçlü" — Faz 4 frontend metadata'ya muhtaç).
+        const alreadyLocal = latest.gltfUrl?.startsWith(LOCAL_GLTF_PREFIX);
+        const alreadyEnriched = latest.enriched === true;
+        if (alreadyLocal && (!wantEnrich || alreadyEnriched)) return;
+
+        const updated = {
           ...latest,
           gltfUrl: localUrl,
           originalGltfUrl: sourceUrl,
-        });
+        };
+        if (wantEnrich) {
+          updated.enriched = localUrl.endsWith(ENRICHED_SUFFIX);
+        }
+
+        await cacheSet(cacheKey, updated);
       } catch (err) {
         console.warn(
           "[gltf-cache] background entry upgrade failed:",
@@ -191,6 +302,31 @@ export function upgradeCacheEntryWithLocalGltf(cacheKey, sourceUrl) {
     .catch((err) => {
       console.warn("[gltf-cache] background download failed:", err.message);
     });
+}
+
+/**
+ * Faz 5 — Sub-article GLB cache helper.
+ *
+ * Sub-article export'ları (`pcon-client.exportSubArticleGltf`) tek başlarına
+ * küçük GLB'lerdir. Enrichment YAPMIYORUZ (mini bir GLB için pipeline
+ * overhead'i değmez; frontend zaten sub-article ID'sine sahip). Sadece raw
+ * cache (`<hash>.glb`) yazıyoruz; pCon objectHash dedup'ından otomatik
+ * faydalanırız (aynı sub-article + aynı geometry farklı request'lerde
+ * tekrar inmesin).
+ *
+ * Compression default OFF: sub-article GLB'leri tipik olarak <300 KB,
+ * Draco roundtrip CPU maliyeti büyük article'lara göre marjinal kazanç
+ * sağlar; basitlik adına compress=false. Operatör isterse opts ile
+ * override edebilir.
+ *
+ * @param {string} remoteUrl pCon CDN sub-article GLB URL.
+ * @param {object} [opts]
+ * @param {boolean} [opts.compress=false]
+ * @returns {Promise<string|null>} Local proxy URL veya hata durumunda
+ *   orijinal pCon URL (graceful degradation, `cacheGltf` davranışı).
+ */
+export async function cacheSubArticleGltf(remoteUrl, { compress = false } = {}) {
+  return cacheGltf(remoteUrl, { compress });
 }
 
 export async function evictOldFiles(maxSizeMB) {

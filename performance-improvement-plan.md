@@ -660,3 +660,62 @@ Bittikten sonra her faz için kontrol checklist'in:
 Bir sonraki istek geldiğinde **Faz 0** ile başlanmalı. Faz 0 bittiği anda sayısal baseline elimizde olacağı için sonraki tüm fazların kazancı objektif olarak ölçülebilir hale gelecek.
 
 > **Not:** Bu doküman canlı bir referans; Faz 0 ölçümleri geldikten sonra "Beklenen etkiler" tablosu güncellenmeli. Faz 5 öncesinde EAIWS sub-article export'unun pratikte desteklenip desteklenmediği bir mini POC ile doğrulanmalı (1-2 saatlik bir test).
+
+---
+
+## 10. Kapanış Notu (2026-05-06) — Proje Şimdiki Durumu
+
+Faz 0-7 implementasyonu tamamlandı ve canlıya alındı. Live test sonrası **Faz 4 mesh-mapping deferred riskinin** mimari bir kısıt olduğu doğrulandı (pCon EAIWS GLB material isimleri vermiyor; calma serisi article'larda sub-article hierarchy yok). Bu sebeple acil garanti çözüm olarak **material-patch + geometry-delta path'leri default OFF** yapıldı; **full-GLB path** devreye girdi.
+
+### Mevcut Performans (ölçüm: 2026-05-06)
+
+| Senaryo | Süre | Durum |
+|---|---|---|
+| Init MISS | ~450 ms | ✅ excellent |
+| Init HIT | <100 ms | ✅ excellent |
+| Yeni renk seçimi | ~2.000 ms | ⚠️ pCon API doğal süresi (kaçınılmaz) |
+| Aynı renge geri dön | ~1 ms (response cache + IDB HIT) | ✅✅✅ excellent |
+| Sayfa refresh + aynı renk | <100 ms (IDB persistent) | ✅ excellent |
+
+### Aktif Optimizasyon Katmanları
+
+- **Backend**: Redis cache schema v2, init endpoint conditional sync enrichment, session pool, classifier
+- **Frontend**: IndexedDB GLB cache (default ON), responseCache Map, optimistic UI, frontend dedupe, link rel="prefetch"
+- **Devre dışı**: material-patch path, geometry-delta path, cache warming (100K kombinasyon scope için yanlış strateji)
+
+### Neden "MDD Coda Gibi <50 ms" Değil?
+
+**pCon EAIWS mimarisi engelliyor**:
+1. `getExportedGeometry` her sorguda mevcut state için **dynamic** GLB üretir (CAD-style parametric); "tüm varyantları içeren super-GLB" export'u yok.
+2. Material assignment sorgu API'si yok (`getMaterialAssignments`, `getMaterialId` vb. mevcut değil).
+3. GLB içindeki material'ların `name` field'ı boş — frontend material identification yapılamıyor.
+4. EAIWS rule engine + mesh generation server-side ~1.5 sn minimum süre alır; bu süreyi cache dışında düşürmek imkânsız.
+
+**Sonuç sorumluluk dağılımı**: pCon kısıtları **~%60**, bizim kod stratejisi (pCon'u runtime engine olarak kullanma kararı) **~%40**.
+
+### Erteleme Kararı: Super-GLB Mimari Geçişi
+
+MDD Coda seviyesi (<50 ms per property change) için tek doğru yol **kendi super-GLB build pipeline'ımızı** yazmak:
+- Her ürünün tüm görsel-değiştiren property kombinasyonlarını offline olarak pCon'dan indir
+- Mesh + material + texture'ları tek bir super-GLB'de merge et
+- Property → mesh.material mapping'ini `gltf.extras` JSON'a yaz
+- Frontend: super-GLB'yi tek seferde indir, property değişimleri tamamen client-side
+- pCon'u sadece price + cart için kullan
+
+**Tahmini iş**: 2-3 hafta development + her ürün için periyodik build cycle. **2026-05-06 itibarıyla ertelendi**; mevcut performans seviyesi (cache HIT'lerde anlık, yeni kombinasyonda 2 sn) iş gereksinimleri için yeterli görüldü.
+
+### Bilinen "Deferred Risk"ler
+
+- Faz 4 mesh-mapping: gerçek implementasyon yapılmadı (material-patch path off). Açmak için: `gltf-enricher` `pconMaterialName` doldurma + backend `getMaterialPatch` `targetSelectors` üretimi gerekli.
+- Faz 5 geometry-delta: mesh-mapping'e bağımlı, aynı sebeple off.
+- Cache warming: 100K kombinasyon scope için stratejik olarak kapatıldı; daha küçük catalog'lu ürünlerde `CACHE_WARMING_ENABLED=true` ile açılabilir.
+- Article-warmer kendi EaiwsSession'ını kullanıyor (session pool'dan bypass) — yeniden gündeme gelirse refactor edilmeli.
+
+### Acil Rollback Komutları
+
+| Davranış | Env Var |
+|---|---|
+| Material-patch path'i ON yap | `PCON_MATERIAL_PATCH_ENABLED=true` |
+| Geometry-delta path'i ON yap | `PCON_GEOMETRY_DELTA_ENABLED=true` |
+| Cache warming ON yap | `CACHE_WARMING_ENABLED=true` |
+| IDB cache OFF yap (frontend) | URL: `?idbcache=0` veya `window.__pconConfig.idbCache = false` |

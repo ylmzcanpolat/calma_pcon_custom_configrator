@@ -15,6 +15,7 @@
     variantId: root.dataset.variantId || "",
     routesRoot: root.dataset.routesRoot || "/",
     addToCartLabel: root.dataset.addToCartLabel || "Add to Cart",
+    customerLoggedIn: root.dataset.customerLoggedIn === "true",
   };
 
   if (!config.articleNumber) {
