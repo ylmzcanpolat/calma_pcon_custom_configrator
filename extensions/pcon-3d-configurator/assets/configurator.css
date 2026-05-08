@@ -237,32 +237,39 @@
   gap: 6px;
 }
 
-/* Nested property groups — rendered inside a parent collapsible body */
+/* Container for inline child properties inside a parent collapsible body */
 .pcon-prop-group__nested {
   border-top: 1px solid #eee;
-  padding: 10px 12px 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
 }
 
-.pcon-prop-group__nested .pcon-prop-group {
-  border-radius: 6px;
-  border-color: #e0e0e0;
-  box-shadow: none;
+/* Inline (non-collapsible) child property section */
+.pcon-prop-inline {
+  display: flex;
+  flex-direction: column;
 }
 
-.pcon-prop-group__nested .pcon-prop-group--open {
-  border-color: #555;
+.pcon-prop-inline__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 6px;
 }
 
-.pcon-prop-group__nested .pcon-prop-group__header {
-  padding: 8px 12px;
-  border-radius: 6px;
+.pcon-prop-inline__header .pcon-prop-group__label {
+  flex-shrink: 0;
 }
 
-.pcon-prop-group__nested .pcon-prop-group__label {
-  font-size: 13px;
+.pcon-prop-inline__header .pcon-prop-group__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pcon-prop-inline .pcon-prop-group__body {
+  border-top: none;
 }
 
 /* Image / color swatch option */

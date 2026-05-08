@@ -81,14 +81,6 @@ function PropertyCollapsible({
   updateProperty,
   prefetchProperty,
 }) {
-  // Nested accordion — each child can be independently open/closed.
-  // Resets when parent closes so child always starts collapsed on next open.
-  const [openChildId, setOpenChildId] = useState(null);
-
-  const handleChildToggle = (id) => {
-    setOpenChildId((prev) => (prev === id ? null : id));
-  };
-
   const isColor = prop.type === "color";
   const currentOption = prop.options.find((o) => o.value === prop.currentValue);
 
@@ -217,17 +209,131 @@ function PropertyCollapsible({
       {open && childProps.length > 0 && (
         <div className="pcon-prop-group__nested">
           {childProps.map((childProp) => (
-            <PropertyCollapsible
+            <PropertyInlineSection
               key={childProp.id}
               prop={childProp}
-              open={openChildId === childProp.id}
-              onToggle={() => handleChildToggle(childProp.id)}
               onSelect={(value) => updateProperty(childProp.id, value)}
               onPrefetch={(value) => prefetchProperty(childProp.id, value)}
             />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Inline (non-collapsible) section for a nested child property.
+ *
+ * Renders inside the parent property's open body without its own toggle,
+ * border, or card wrapper. Shows:
+ *   - property label  (pcon-prop-group__label)
+ *   - currently selected option: swatch + label  (pcon-prop-group__summary-*)
+ *   - all options as interactive buttons (same chip/swatch pattern as the
+ *     parent), so the user can select a value directly
+ */
+function PropertyInlineSection({ prop, onSelect, onPrefetch }) {
+  const isColor = prop.type === "color";
+  const currentOption = prop.options.find((o) => o.value === prop.currentValue);
+
+  const handleSelect = (opt) => {
+    if (!opt.available) return;
+    if (opt.value !== prop.currentValue) {
+      onSelect(opt.value);
+    }
+  };
+
+  const handleHover = (opt) => {
+    if (!onPrefetch) return;
+    if (!opt.available) return;
+    if (opt.value === prop.currentValue) return;
+    onPrefetch(opt.value);
+  };
+
+  const bodyClassName = isColor
+    ? "pcon-prop-group__body pcon-prop-group__body--colors"
+    : "pcon-prop-group__body pcon-prop-group__body--chips";
+
+  return (
+    <div className="pcon-prop-inline">
+      <div className="pcon-prop-inline__header">
+        <span className="pcon-prop-group__label">{prop.label}</span>
+        <span className="pcon-prop-group__summary">
+          {isColor && currentOption?.icon ? (
+            <span
+              className="pcon-prop-group__summary-swatch"
+              style={{ backgroundImage: `url("${currentOption.icon}")` }}
+              aria-hidden="true"
+            />
+          ) : null}
+          <span className="pcon-prop-group__summary-label">
+            {currentOption?.label ?? "—"}
+          </span>
+        </span>
+      </div>
+
+      <div className={bodyClassName}>
+        {prop.options.map((opt) => {
+          const isActive = opt.value === prop.currentValue;
+
+          if (isColor) {
+            const className = [
+              "pcon-option-swatch",
+              isActive && "pcon-option-swatch--active",
+              !opt.available && "pcon-option-swatch--disabled",
+            ]
+              .filter(Boolean)
+              .join(" ");
+
+            return (
+              <button
+                type="button"
+                key={opt.value}
+                className={className}
+                disabled={!opt.available}
+                title={opt.label}
+                onClick={() => handleSelect(opt)}
+                onMouseEnter={() => handleHover(opt)}
+                onFocus={() => handleHover(opt)}
+              >
+                <span
+                  className="pcon-option-swatch__thumb"
+                  style={
+                    opt.icon
+                      ? { backgroundImage: `url("${opt.icon}")` }
+                      : undefined
+                  }
+                  aria-hidden="true"
+                />
+                <span className="pcon-option-swatch__label">{opt.label}</span>
+              </button>
+            );
+          }
+
+          const className = [
+            "pcon-option-chip",
+            isActive && "pcon-option-chip--active",
+            !opt.available && "pcon-option-chip--disabled",
+          ]
+            .filter(Boolean)
+            .join(" ");
+
+          return (
+            <button
+              type="button"
+              key={opt.value}
+              className={className}
+              disabled={!opt.available}
+              title={opt.label}
+              onClick={() => handleSelect(opt)}
+              onMouseEnter={() => handleHover(opt)}
+              onFocus={() => handleHover(opt)}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
