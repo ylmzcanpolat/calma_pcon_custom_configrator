@@ -12,5 +12,10 @@ export default function PriceDisplay() {
     minimumFractionDigits: 2,
   }).format(price);
 
-  return <div className="pcon-price">{formatted}</div>;
+  return (
+    <div className="pcon-price">
+      <span className="pcon-price__label">List Price</span>
+      <span className="pcon-price__value">{formatted}</span>
+    </div>
+  );
 }

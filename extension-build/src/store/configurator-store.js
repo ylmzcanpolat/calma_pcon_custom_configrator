@@ -771,8 +771,8 @@ const useConfiguratorStore = create((set, get) => ({
    *
    *  2b. **Normal mode** — intent yok/expired:
    *      Dönen `cartProperties` olduğu gibi Shopify `cart/add.js` body'sinin
-   *      `properties` alanına gömülür. Başarıda sayfa `window.location.reload()`
-   *      ile yenilenir; tema kendi cart count / drawer state'ini fresh çeker.
+   *      `properties` alanına gömülür. Başarıda `/collections/calma-pods`
+   *      adresine yönlendirilir.
    *
    * Hata durumunda `cartError` set edilir, buton yeniden tıklanabilir kalır.
    */
@@ -907,10 +907,10 @@ const useConfiguratorStore = create((set, get) => ({
       await postCartAdd(routesRoot, items);
       set(nextState);
 
-      // Başarı feedback'i kullanıcıya kısa süreli görünsün diye reload'u
+      // Başarı feedback'i kullanıcıya kısa süreli görünsün diye yönlendirmeyi
       // bir sonraki tick'e atıyoruz; aynı tick'te navigate olursa React
       // unmount'tan önce success badge yansımayabilir.
-      window.setTimeout(() => window.location.reload(), 0);
+      window.setTimeout(() => { window.location.href = "/collections/calma-pods"; }, 0);
       return true;
     } catch (err) {
       set({

@@ -117,10 +117,25 @@
 .pcon-price {
   background: #fff;
   padding: 16px 16px 8px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pcon-price__label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.pcon-price__value {
   font-size: 24px;
   font-weight: 700;
   color: #1a1a1a;
-  text-align: right;
 }
 
 /* Property Selector Panel */
