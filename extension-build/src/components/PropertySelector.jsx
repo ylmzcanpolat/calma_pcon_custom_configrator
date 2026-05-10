@@ -14,6 +14,26 @@ const NESTED_PROP_CHILD_OF = {
   "DUVAR.DOSEME_RENK_DUVAR": "DUVAR.DOSEME_SERI_DUVAR",
 };
 
+/**
+ * Explicit display order for known property IDs.
+ * Properties whose ID is not listed here are appended after these, preserving
+ * the order they arrive from the backend.
+ */
+const PROP_ORDER = [
+  "GENEL.BOLGE",
+  "DUVAR.DOSEME_SERI_DUVAR",
+  "DUVAR.KECE_RENK_DUVAR",
+  "DUVAR.YUZEY_RENK_DUVAR",
+  "ZEMIN.HALI_RENK",
+  "MASA.MASA_TUR",
+  "MASA.YUZEY_RENK_MASA",
+  "GENEL.PRIZ_TIPI",
+  "TAVAN.SPRINKLER",
+  "MT_TEXT.GGRACHAIR",
+];
+
+const PROP_ORDER_INDEX = new Map(PROP_ORDER.map((id, i) => [id, i]));
+
 export default function PropertySelector() {
   const properties = useConfiguratorStore((s) => s.properties);
   const updateProperty = useConfiguratorStore((s) => s.updateProperty);
@@ -34,8 +54,22 @@ export default function PropertySelector() {
   // IDs of props that must be rendered nested — excluded from top-level list.
   const childPropIds = new Set(Object.keys(NESTED_PROP_CHILD_OF));
 
-  // Top-level props: everything that is NOT a designated nested child.
-  const topLevelProps = editableProps.filter((p) => !childPropIds.has(p.id));
+  // Top-level props: everything that is NOT a designated nested child,
+  // sorted by PROP_ORDER. Unknown IDs retain their original backend order
+  // and appear after all known IDs.
+  const topLevelProps = editableProps
+    .filter((p) => !childPropIds.has(p.id))
+    .map((prop, backendIdx) => ({ prop, backendIdx }))
+    .sort((a, b) => {
+      const ai = PROP_ORDER_INDEX.has(a.prop.id)
+        ? PROP_ORDER_INDEX.get(a.prop.id)
+        : PROP_ORDER.length + a.backendIdx;
+      const bi = PROP_ORDER_INDEX.has(b.prop.id)
+        ? PROP_ORDER_INDEX.get(b.prop.id)
+        : PROP_ORDER.length + b.backendIdx;
+      return ai - bi;
+    })
+    .map(({ prop }) => prop);
 
   // Build parentId → [child prop, …] lookup using live (store-fresh) prop objects
   // so option lists stay up-to-date after every backend response.
