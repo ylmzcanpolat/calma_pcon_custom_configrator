@@ -124,9 +124,9 @@
 }
 
 .pcon-price__label {
-  font-size: 13px;
-  font-weight: 500;
-  color: #666;
+  font-size: 14px;
+  font-weight: 600;
+  color: #888;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   flex-shrink: 0;
