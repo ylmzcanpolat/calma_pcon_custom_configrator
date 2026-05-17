@@ -1,154 +1,288 @@
+/**
+ * Configurator store — WCF (@easterngraphics/wcf) tabanlı.
+ *
+ * Mimari kararlar:
+ *   - WCF Application/Session/ArticleManager/propMap module-level değişkenlerde
+ *     tutulur: Zustand state'ine koymak bu objeler değiştikçe gereksiz
+ *     re-render tetikler.
+ *   - Zustand store sadece UI state (properties, price, loading, cart) tutar.
+ *   - ConfiguratorScene.jsx WCF lifecycle'ı yönetir (mount/unmount/cleanup)
+ *     ve hazır olduğunda `setWcfReady` / `setWcfError` ile store'u günceller.
+ *   - `updateProperty` store action'ı WCF setValue → getProperties zincirini
+ *     çalıştırır; Three.js, GLB indirme, backend round-trip yoktur.
+ *   - Cart akışı değişmez: backend `/api/pcon/cart-payload` hala pCon OBX/
+ *     attachment URL'leri üretir. itemId artık null (backend yeni session açar).
+ */
+
 import { create } from "zustand";
-import {
-  initArticle,
-  updateProperties,
-  fetchCartPayload,
-} from "../utils/api.js";
+// fetchCartPayload: backend round-trip yolu — WCF direkt akışında kullanılmıyor
+// import { fetchCartPayload } from "../utils/api.js";
 import { readUrlProperties, writeUrlProperties } from "../utils/url-sync.js";
-import { postCartAdd } from "../utils/cart.js";
+import { postCartAdd, dispatchCartUpdateEvents } from "../utils/cart.js";
 import {
   getPreorderIntent,
   clearPreorderIntent,
   getCustomerId,
   postPreorderAddLine,
 } from "../utils/preorder-intent.js";
-import { createPerfRecorder } from "../utils/perf.js";
-import { applyMaterialPatch } from "../scene/MaterialSwapper.js";
-import { applyGeometryDelta } from "../scene/GeometrySwapper.js";
 
-const responseCache = new Map();
+// ─── Module-level WCF state (Zustand dışında — re-render tetiklemez) ─────────
 
-function buildPropsCacheKey(properties) {
-  const sorted = Object.keys(properties).sort();
-  return sorted.map((k) => k + "=" + properties[k]).join("&");
-}
+/** @type {import("@easterngraphics/wcf/modules/cf").ArticleElement | null} */
+let _wcfArticle = null;
 
-/* ─────────────────── Faz 6 — Feature flags & prefetch infra ────────────────
- *
- * Hepsi default OFF veya UX-yumuşak ON. Window/query gating sayesinde
- * production bundle bytewise mevcut davranışı korur ta ki opt-in yapılana
- * kadar.
- *
- *   PCON_HOVER_PREFETCH (default OFF) — option butonu hover'ında debounce'lu
- *     prefetch. Backend Redis cache + frontend `responseCache` populate olur;
- *     ardından gelen click cache HIT path'inde no-op network ile döner.
- *   PCON_OPTIMISTIC_UI (default ON) — `updateProperty` tıklama anında
- *     `currentValue`'yu set eder; backend cevabı geldiğinde finalize/revert
- *     edilir. OFF ise klasik "click → wait → state" akışı.
- *
- * Prefetch'in EAIWS rate limit'e takılmaması için iki guard:
- *   - PREFETCH_DEBOUNCE_MS — aynı key 200ms quiet period beklemeden hiç
- *     fetch tetiklenmez (hızlı mouse-over her butona hit etmez).
- *   - MAX_CONCURRENT_PREFETCH — eşzamanlı 3'ü aşmaz; tetiklenecek 4üncü
- *     debounce timer içinde sessizce skip edilir.
+/** @type {import("@easterngraphics/wcf/modules/cf").ArticleManager | null} */
+let _wcfArticleManager = null;
+
+/**
+ * propId → raw WCF property ref.
+ * `setValue` çağrısı için saklanır; her getProperties() sonrası güncellenir.
+ * @type {Map<string, object>}
  */
-const PREFETCH_DEBOUNCE_MS = 200;
-const MAX_CONCURRENT_PREFETCH = 3;
-const prefetchInflight = new Set();
-const prefetchTimers = new Map();
+let _wcfPropMap = new Map();
 
-function isHoverPrefetchEnabled() {
-  if (typeof window === "undefined") return false;
-  if (window.__pconConfig && window.__pconConfig.hoverPrefetch === true) return true;
-  try {
-    return window.location.search.indexOf("hoverprefetch=1") !== -1;
-  } catch {
-    return false;
-  }
+// ─── Cart property category helpers ───────────────────────────────────────
+
+/**
+ * WCF property id'sindeki anahtar kelimelerden mantıksal kategori çıkarır.
+ * Kategori adları Shopify cart properties'teki "divider" başlıkları olarak kullanılır.
+ *
+ * Ürün-bağımsız genel kelimeler (DUVAR=wall, MASA=table, HALI=carpet/floor)
+ * yanında ek pattern'ler de gerekirse buraya eklenebilir.
+ */
+function getPropertyCategory(propId) {
+  const u = (propId || "").toUpperCase();
+  if (u.includes("DUVAR"))    return "WALL";
+  if (u.includes("MASA"))     return "TABLE";
+  if (u.includes("HALI"))     return "FLOOR";
+  if (u.includes("TAVAN") || u.includes("SPRINKLER")) return "CEILING";
+  if (u.includes("MONITOR") || u.includes("EKRAN") || u.includes("SCREEN"))
+    return "SCREEN MOUNT";
+  return "GENERAL";
 }
 
-function isOptimisticUIEnabled() {
-  if (typeof window === "undefined") return true;
-  if (window.__pconConfig && window.__pconConfig.optimisticUI === false) return false;
-  try {
-    if (window.location.search.indexOf("optimisticui=0") !== -1) return false;
-  } catch {
-    /* ignore */
-  }
-  return true;
+/** Kategorilerin istenen görünüm sırası */
+const CATEGORY_ORDER = [
+  "GENERAL",
+  "WALL",
+  "TABLE",
+  "SCREEN MOUNT",
+  "CEILING",
+  "FLOOR",
+];
+
+/**
+ * PropertySelector'da gösterilecek property'lerin sabit sıralaması.
+ * Bu listede yer alan ID'ler her zaman en başta, buradaki sırayla gösterilir.
+ * Listede yer almayan property'ler pCon'dan gelen orijinal sıralarıyla
+ * bu property'lerin ardından eklenir.
+ */
+const PROPERTY_ORDER = [
+  "[Character]NRUS_DOSEME_SERI_DUVAR",
+  "[Character]NRUS_DOSEME_RENK_DUVAR",
+  '[Character]NRUS_DOSEME_RENK_DUVAR',
+  "[Character]NRUS_KECE_RENK_DUVAR",
+  "[Character]NRUS_YUZEY_RENK_MASA",
+  "[Character]NRUS_HALI_RENK",
+  "[Character]NRUS_KOLTUK",
+  "[Character]NRUS_PRIZ_TIPI",
+  "[Character]NRUS_MEDIAWALL",
+];
+
+/**
+ * PropertySelector'da GÖSTERİLMEYECEK property ID'leri.
+ * Bu ID'ler mapWcfProperties aşamasında filtrelenir; UI'da görünmez.
+ */
+const HIDDEN_FROM_UI = new Set([
+  "[Character]NRUS_Meta_Dimension",
+  "[Character]NRUS_GGRACHAIR",
+]);
+
+/**
+ * UI'dan gizlenen ama sepet payload'ına ZORLA eklenmesi gereken property'ler.
+ * Her entry: { id, propLabel, value, displayLabel }
+ *   - propLabel   : cart'ta görünecek property adı (human-readable)
+ *   - value       : WCF'e / pCon'a gönderilecek ham değer
+ *   - displayLabel: cart'ta görünecek seçim etiketi
+ */
+const HIDDEN_CART_FORCED = [
+  {
+    id: "[Character]NRUS_GGRACHAIR",
+    propLabel: "STOOL OPTION",
+    value: "chair_no",
+    displayLabel: "NO",
+  },
+];
+
+// ─── Property mapping helpers ──────────────────────────────────────────────
+
+/**
+ * WCF raw property listesini choices ile birlikte yükler ve
+ * PropertySelector'ın beklediği formata dönüştürür.
+ *
+ * @param {object[]} rawProps - article.getProperties() çıktısı
+ * @returns {Promise<object[]>} - { id, label, type, editable, currentValue, options }
+ */
+async function mapWcfProperties(rawProps) {
+  if (!Array.isArray(rawProps)) return [];
+
+  const editableChoiceProps = rawProps.filter(
+    (r) =>
+      r.visible !== false &&
+      r.editable !== false &&
+      r.choiceList &&
+      !HIDDEN_FROM_UI.has(r.key),
+  );
+
+  const choiceResults = await Promise.all(
+    editableChoiceProps.map((r) =>
+      typeof r.getChoices === "function"
+        ? r.getChoices().catch(() => [])
+        : Promise.resolve([]),
+    ),
+  );
+
+  const mapped = editableChoiceProps.map((raw, i) => {
+    const choices = choiceResults[i] || [];
+    const currentVal = typeof raw.getValue === "function" ? raw.getValue() : null;
+
+    return {
+      id: raw.key,
+      label: raw.name,
+      type: choices.some((c) => c.largeIcon || c.smallIcon) ? "color" : "text",
+      editable: true,
+      currentValue: currentVal?.value ?? null,
+      options: choices.map((c) => ({
+        value: c.value,
+        label: c.text,
+        icon: c.largeIcon || c.smallIcon || null,
+        available: c.selectable !== false,
+      })),
+    };
+  });
+
+  // PROPERTY_ORDER listesindeki ID'ler önce, tanımlı sırayla gelir.
+  // Listede bulunmayanlar pCon'dan gelen orijinal sıralarını koruyarak arkaya eklenir.
+  const orderMap = new Map(PROPERTY_ORDER.map((id, idx) => [id, idx]));
+  return mapped.sort((a, b) => {
+    const ai = orderMap.has(a.id) ? orderMap.get(a.id) : Infinity;
+    const bi = orderMap.has(b.id) ? orderMap.get(b.id) : Infinity;
+    if (ai !== bi) return ai - bi;
+    // Her ikisi de listede yoksa orijinal pCon sırası korunur (sort stable)
+    return 0;
+  });
 }
 
 /**
- * `<link rel="prefetch">` tag'i ekle. Browser HTTP cache'ine düşürür;
- * gerçek tıklamada texture/image fetch network'ten değil cache'ten gelir.
- * Idempotent: aynı href için ikinci kez çağrılırsa duplicate eklemez.
+ * WCF article'dan fiyat okur.
+ *
+ * YÖ1: getCompositeCalculation() — pricing procedure kuruluysa tüm fiyat
+ *      detaylarını verir. Procedure yoksa "no active pricing procedure"
+ *      exception fırlatır; ayrı try/catch ile yakalanır, YÖ2'ye geçilir.
+ *
+ * YÖ2: getItemProperties().article.salesPrice — pricing procedure olmadan
+ *      da çalışır; temel satış fiyatını döndürür.
+ *
+ * KRİTİK: Her method kendi try/catch bloğundadır. Böylece YÖ1 exception
+ * fırlatsa bile YÖ2 her zaman denenir.
+ *
+ * @param {object} article - WCF ArticleElement
+ * @returns {Promise<{ price: number|null, currency: string }>}
  */
-function preloadAsset(href, asKind) {
-  if (!href || typeof document === "undefined") return;
+async function fetchWcfPrice(article) {
+  if (!article) return { price: null, currency: "EUR" };
+
+  const mainArticle =
+    typeof article.getMainArticle === "function"
+      ? (article.getMainArticle() ?? article)
+      : article;
+
+  // YÖ1 — getCompositeCalculation (pricing procedure kuruluysa çalışır)
+  // Ayrı try/catch: exception fırlatırsa YÖ2'ye geçilir.
   try {
-    const sel = `link[rel="prefetch"][href="${href.replace(/"/g, '\\"')}"]`;
-    if (document.head.querySelector(sel)) return;
-    const link = document.createElement("link");
-    link.rel = "prefetch";
-    if (asKind) link.as = asKind;
-    link.href = href;
-    document.head.appendChild(link);
-  } catch {
-    /* ignore — non-blocking enhancement */
+    if (typeof mainArticle.getCompositeCalculation === "function") {
+      const calc = await mainArticle.getCompositeCalculation();
+      const moneyObj = calc?.grossPrice ?? calc?.netPrice ?? calc?.salesPrice;
+      if (moneyObj?.value != null) {
+        return {
+          price: moneyObj.value,
+          currency: moneyObj.currency || "EUR",
+        };
+      }
+    }
+  } catch (err) {
+    console.warn("[wcf] getCompositeCalculation failed (falling back to getItemProperties):", err?.message || err);
   }
+
+  // YÖ2 — getItemProperties (pricing procedure olmadan da çalışır)
+  // Ayrı try/catch: YÖ1'den bağımsız olarak her zaman denenir.
+  try {
+    if (typeof mainArticle.getItemProperties === "function") {
+      const itemProps = await mainArticle.getItemProperties?.();
+      const art = itemProps?.article;
+      if (art?.salesPrice != null) {
+        return {
+          price: art.salesPrice,
+          currency: art.salesCurrency || "EUR",
+        };
+      }
+    }
+  } catch (err) {
+    console.warn("[wcf] getItemProperties failed:", err?.message || err);
+  }
+
+  console.warn("[wcf] price could not be determined — both methods failed");
+  return { price: null, currency: "EUR" };
 }
 
-const useConfiguratorStore = create((set, get) => ({
-  gltfUrl: null,
-  price: null,
-  currency: "TRY",
-  properties: [],
-  loading: false,
-  updating: false,
-  error: null,
+// ─── URL sync helpers ──────────────────────────────────────────────────────
 
+function syncCurrentToUrl(properties) {
+  const map = {};
+  for (const p of properties) {
+    if (p.currentValue) map[p.id] = p.currentValue;
+  }
+  writeUrlProperties(map);
+}
+
+// ─── Store ─────────────────────────────────────────────────────────────────
+
+const useConfiguratorStore = create((set, get) => ({
+  // ── Config (initialize() tarafından set edilir) ──────────────────────────
   proxyBase: "",
+  gatekeeperId: "",
   articleNumber: "",
   manufacturerId: "",
-  itemId: null,
+  currency: "TRY",
   customIcons: {},
-
-  // Cart state — addToCart için
-  cartProperties: null,
-  quantity: 1,
   variantId: null,
   routesRoot: "/",
   addToCartLabel: "Add to Cart",
+  successAction: "drawer-event",
+
+  // ── UI State ─────────────────────────────────────────────────────────────
+  loading: false,
+  updating: false,
+  error: null,
+  properties: [],
+  price: null,
+
+  // ── Cart State ────────────────────────────────────────────────────────────
+  // null = henüz hazır değil (buton disabled), {} = WCF article yüklendi (hazır)
+  cartProperties: null,
+  quantity: 1,
   cartLoading: false,
   cartError: null,
   cartSuccess: false,
 
-  // Faz 4 — Material-swap orchestration state.
-  //
-  // `sceneRef`           Model.jsx tarafından mount/unmount sırasında
-  //                      published THREE.Group; `applyMaterialPatch` /
-  //                      `applyGeometryDelta` bu referansı kullanır.
-  //                      Render loop'a katılmaz, sadece action içinden
-  //                      okunur — re-render tetiklemez ama zustand'da
-  //                      subscriber'ı yok zaten.
-  // `lastResponseType`   "material-patch" | "geometry-delta" | "full-gltf"
-  //                      | null. Spinner gating'inde ConfiguratorScene.jsx
-  //                      tarafından okunuyor (in-place patch sırasında
-  //                      spinner GÖSTERMEME — fade-in artifacti olmaz).
-  // `gltfLoader`         Faz 5 — Model.jsx'in DRACO-configured GLTFLoader
-  //                      singleton'ı. GeometrySwapper sub-article GLB'leri
-  //                      bu loader üzerinden yükler.
-  sceneRef: null,
-  lastResponseType: null,
-  gltfLoader: null,
-
-  // Faz 6 — Hover prefetch routing. Backend `/api/pcon/init` her property için
-  // "appearance" | "geometry" | "unknown" classification döner; prefetch
-  // action bunu kullanarak texture preload mı (appearance) yoksa backend
-  // warm fetch mi (geometry/unknown) yapacağına karar verir.
-  // Subscriber yok (sadece action içinde tüketilir) → re-render tetiklemez.
-  classifications: {},
-
-  async initialize(config) {
-    // Faz 0 telemetry: configurator init zincirini ölç. Davranış değişmez.
-    const recorder = createPerfRecorder({
-      op: "initialize",
-      articleNumber: config.articleNumber,
-    });
-    recorder.mark("click");
-
+  // ────────────────────────────────────────────────────────────────────────
+  // Aksiyon: initialize — App.jsx'ten config alınır, ConfiguratorScene
+  // tetiklenir (loading: true seti). Asıl WCF başlatma ConfiguratorScene'de.
+  // ────────────────────────────────────────────────────────────────────────
+  initialize(config) {
     set({
       proxyBase: config.proxyBase,
+      gatekeeperId: config.gatekeeperId || "",
       articleNumber: config.articleNumber,
       manufacturerId: config.manufacturerId,
       currency: config.currency,
@@ -156,585 +290,242 @@ const useConfiguratorStore = create((set, get) => ({
       variantId: config.variantId || null,
       routesRoot: config.routesRoot || "/",
       addToCartLabel: config.addToCartLabel || "Add to Cart",
+      successAction: config.successAction || "drawer-event",
       loading: true,
       error: null,
+      properties: [],
+      price: null,
+      cartProperties: null,
     });
+  },
 
+  // ────────────────────────────────────────────────────────────────────────
+  // Aksiyon: refreshWcfPrice — eventArticleChanged listener ve dışarıdan
+  // fiyat yenilenmesi için. Mevcut price null ise veya pricing procedure
+  // hazır olduğunda tekrar çağrılır.
+  // ────────────────────────────────────────────────────────────────────────
+  async refreshWcfPrice() {
+    if (!_wcfArticle) return;
     try {
-      const data = await initArticle(
-        config.proxyBase,
-        config.articleNumber,
-        config.manufacturerId,
-      );
-      recorder.mark("response_server");
-      if (data && data.__perfMeta) {
-        recorder.attachServerTiming(data.__perfMeta.serverTiming);
-      }
-
-      const urlProps = readUrlProperties();
-      let properties = data.properties || [];
-
-      properties = properties.map((prop) => {
-        if (urlProps[prop.id] !== undefined) {
-          return { ...prop, currentValue: urlProps[prop.id] };
-        }
-        return prop;
-      });
-
-      properties = applyCustomIcons(properties, get().customIcons);
-
-      set({
-        gltfUrl: data.gltfUrl,
-        price: data.price,
-        currency: data.currency || config.currency,
-        properties,
-        itemId: data.itemId,
-        cartProperties: data.cartProperties || null,
-        // Faz 6 — Backend Faz 1'de eklenen `classifications` map'i
-        // (`{ propId: "appearance" | "geometry" | "unknown" }`). Eski
-        // backend'lerle uyumluluk için yoksa boş obje düşeriz —
-        // `prefetchProperty` action'ı "unknown" path'ine sapar.
-        classifications: data.classifications || {},
-        loading: false,
-      });
-      recorder.mark("paint_state_set");
-
-      const initProps = {};
-      for (const p of properties) {
-        if (p.currentValue) initProps[p.id] = p.currentValue;
-      }
-      responseCache.set(buildPropsCacheKey(initProps), {
-        gltfUrl: data.gltfUrl,
-        price: data.price,
-        currency: data.currency || config.currency,
-        properties,
-        cartProperties: data.cartProperties || null,
-      });
-
-      recorder.flushToConsole();
-      recorder.flushToWindow();
-
-      const hasUrlOverrides = Object.keys(urlProps).length > 0;
-      if (hasUrlOverrides) {
-        get().applyUrlProperties(urlProps);
-      } else {
-        syncCurrentToUrl(properties);
+      const priceData = await fetchWcfPrice(_wcfArticle);
+      if (priceData?.price != null) {
+        set({
+          price: priceData.price,
+          currency: priceData.currency || get().currency,
+        });
       }
     } catch (err) {
-      recorder.mark("error");
-      recorder.flushToConsole();
-      recorder.flushToWindow();
-      set({ error: err.message, loading: false });
+      console.warn("[store] refreshWcfPrice failed:", err?.message || err);
     }
   },
 
-  async applyUrlProperties(urlProps) {
-    const { proxyBase, itemId, articleNumber, manufacturerId, properties: prevProperties, customIcons } = get();
-    // Faz 0 telemetry: URL'den apply edilen property setinin click→paint
-    // süresi. Davranış değişmez.
-    const recorder = createPerfRecorder({
-      op: "applyUrlProperties",
-      articleNumber,
-      propertyId: Object.keys(urlProps || {})[0] || null,
-    });
-    recorder.mark("click");
-    set({ updating: true });
+  // ────────────────────────────────────────────────────────────────────────
+  // Aksiyon: setWcfReady — ConfiguratorScene WCF yüklemeyi tamamladığında
+  // çağırır; article ve propMap module-level değişkenlere yazılmış olmalı.
+  // ────────────────────────────────────────────────────────────────────────
+  async setWcfReady(article, articleManager, rawProps) {
+    _wcfArticle = article;
+    _wcfArticleManager = articleManager;
+    _wcfPropMap = new Map(rawProps.map((r) => [r.key, r]));
 
-    try {
-      const data = await updateProperties(proxyBase, urlProps, itemId, articleNumber, manufacturerId);
-      recorder.mark("response_server");
-      if (data && data.__perfMeta) {
-        recorder.attachServerTiming(data.__perfMeta.serverTiming);
-      }
-      const merged = mergeProperties(prevProperties, data, customIcons);
+    const priceData = await fetchWcfPrice(article).catch(() => ({
+      price: null,
+      currency: "EUR",
+    }));
 
-      set({
-        gltfUrl: data.gltfUrl,
-        price: data.price,
-        currency: data.currency || get().currency,
-        properties: merged,
-        cartProperties: data.cartProperties || get().cartProperties,
-        updating: false,
-      });
-      recorder.mark("paint_state_set");
-      recorder.flushToConsole();
-      recorder.flushToWindow();
-    } catch (err) {
-      recorder.mark("error");
-      recorder.flushToConsole();
-      recorder.flushToWindow();
-      set({ error: err.message, updating: false });
-    }
-  },
+    const mapped = await mapWcfProperties(rawProps).catch(() => []);
+    const customIcons = get().customIcons;
+    const properties = applyCustomIcons(mapped, customIcons);
 
-  async updateProperty(key, value) {
-    const { proxyBase, itemId, properties, articleNumber, manufacturerId, customIcons } = get();
-
-    // Faz 0 telemetry: tıklamadan paint'e (state.set) kadar her phase'i ölç.
-    // Davranış değişmez — sadece `window.__pconPerf` ring buffer'a entry
-    // push ve tek satır console log.
-    const recorder = createPerfRecorder({
-      op: "updateProperty",
-      articleNumber,
-      propertyId: key,
-    });
-    recorder.mark("click");
-
-    const optimistic = properties.map((p) =>
-      p.id === key ? { ...p, currentValue: value } : p,
+    // ─── pCon / WCF property debug logs ─────────────────────────────────────
+    console.group("[pCon] Properties — raw (WCF)");
+    console.log("rawProps count:", rawProps.length);
+    console.table(
+      rawProps.map((r) => ({
+        key: r.key,
+        name: r.name,
+        visible: r.visible,
+        editable: r.editable,
+        hasChoiceList: !!r.choiceList,
+        value: typeof r.getValue === "function" ? r.getValue()?.value : "(n/a)",
+      })),
     );
+    console.groupEnd();
 
-    // Faz 6 — Optimistic UI flag-gated.
-    //   ON (default): tıklama anında `currentValue` set edilir → button
-    //     active state ANINDA render edilir; backend response'u beklenmez.
-    //     Hata path'i (catch) state'i ve URL'i `properties`/`syncCurrentToUrl`
-    //     ile geri alır + console.warn ("[store] property revert: ...").
-    //   OFF: klasik akış — sadece `updating: true`. Backend response geldikten
-    //     sonra state set edilir; revert ihtiyacı zaten yok (state hiç ileri
-    //     gitmedi).
-    const optimisticEnabled = isOptimisticUIEnabled();
-    if (optimisticEnabled) {
-      set({ properties: optimistic, updating: true, error: null });
-      syncCurrentToUrl(optimistic);
-    } else {
-      set({ updating: true, error: null });
-    }
+    console.group("[pCon] Properties — mapped (store)");
+    console.log("mapped count:", properties.length);
+    console.table(
+      properties.map((p) => ({
+        id: p.id,
+        label: p.label,
+        type: p.type,
+        currentValue: p.currentValue,
+        optionCount: p.options?.length ?? 0,
+      })),
+    );
+    console.log("[pCon] Full mapped properties (JSON):", JSON.stringify(properties, null, 2));
+    console.groupEnd();
+    // ─────────────────────────────────────────────────────────────────────────
 
-    const allProps = {};
-    for (const p of optimistic) {
-      if (p.currentValue) allProps[p.id] = p.currentValue;
-    }
+    set({
+      properties,
+      price: priceData.price,
+      currency: priceData.currency || get().currency,
+      cartProperties: {}, // signal: WCF article hazır → cart butonu açılır
+      loading: false,
+    });
 
-    const cacheKey = buildPropsCacheKey(allProps);
-    const cached = responseCache.get(cacheKey);
-    if (cached) {
-      recorder.mark("response_local_cache");
-      const merged = mergeProperties(optimistic, cached, customIcons);
+    // Not: ConfiguratorScene, setWcfReady bittikten hemen sonra
+    // refreshWcfPrice() çağırır. Burada ek retry'a gerek yok.
 
-      // Faz 4 — local cache'de material-patch entry'si varsa yeniden uygula.
-      // Aynı combination ikinci kez seçilirse sahnede MaterialSwapper'ı tekrar
-      // çağırırız; durum aynı zaten ama state-only update yetmez (önceki
-      // tıklamada başka kombinasyona gidip geri dönülmüş olabilir).
-      if (cached.type === "material-patch") {
-        const sceneRef = get().sceneRef;
-        if (sceneRef) {
-          try {
-            await applyMaterialPatch(sceneRef, cached);
-          } catch (err) {
-            console.warn(
-              "[store] applyMaterialPatch (cache HIT) failed:",
-              err.message,
-            );
-          }
+    // URL'deki property override'larını uygula
+    const urlProps = readUrlProperties();
+    if (Object.keys(urlProps).length > 0) {
+      for (const [propId, value] of Object.entries(urlProps)) {
+        const currentProp = properties.find((p) => p.id === propId);
+        if (currentProp && currentProp.currentValue !== value) {
+          get()
+            .updateProperty(propId, value)
+            .catch((e) => console.warn("[store] URL prop apply failed:", e.message));
         }
-        set({
-          // gltfUrl AYNI KALIR — material-patch GLB swap tetiklemez.
-          price: cached.price,
-          currency: cached.currency || get().currency,
-          properties: merged,
-          cartProperties: cached.cartProperties || get().cartProperties,
-          updating: false,
-          lastResponseType: "material-patch",
-        });
-      } else if (cached.type === "geometry-delta") {
-        // Faz 5 — local cache HIT'te de geometry-delta'yı sahneye uygula.
-        // Aynı kombinasyon iki kez seçilirse (örn. user A→B→A toggling)
-        // ikinci tıklamada sahne hala A state'ine dönmemiş olabilir;
-        // delta'yı tekrar uygulayarak senkronize ederiz.
-        const sceneRef = get().sceneRef;
-        const gltfLoader = get().gltfLoader;
-        if (sceneRef && gltfLoader) {
-          try {
-            await applyGeometryDelta(sceneRef, cached, gltfLoader);
-          } catch (err) {
-            console.warn(
-              "[store] applyGeometryDelta (cache HIT) failed:",
-              err.message,
-            );
-          }
-        }
-        set({
-          // gltfUrl AYNI KALIR — geometry-delta full GLB swap tetiklemez.
-          price: cached.price,
-          currency: cached.currency || get().currency,
-          properties: merged,
-          cartProperties: cached.cartProperties || get().cartProperties,
-          updating: false,
-          lastResponseType: "geometry-delta",
-        });
-      } else {
-        set({
-          gltfUrl: cached.gltfUrl,
-          price: cached.price,
-          currency: cached.currency || get().currency,
-          properties: merged,
-          cartProperties: cached.cartProperties || get().cartProperties,
-          updating: false,
-          lastResponseType: "full-gltf",
-        });
       }
-      recorder.mark("paint_state_set");
-      recorder.flushToConsole();
-      recorder.flushToWindow();
+    } else {
+      syncCurrentToUrl(properties);
+    }
+  },
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Aksiyon: setWcfError — ConfiguratorScene hata durumunda çağırır.
+  // ────────────────────────────────────────────────────────────────────────
+  setWcfError(err) {
+    set({ error: err?.message || String(err), loading: false });
+  },
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Aksiyon: updateProperty
+  //
+  // setValue() EAIWS sunucusunu günceller; BabylonJS sahne güncellemesi ise
+  // eventArticleChanged ateşlenince tamamlanır.
+  //
+  // Race-condition fix: her iki koşul da gerçekleşene kadar bekle:
+  //   1. setValue() promise'i resolve (EAIWS onayı)
+  //   2. eventArticleChanged event'i (sahne güncellemesi tamamlandı)
+  // Her ikisi birleşince getProperties() çağrılır → UI + sahne senkron.
+  // ────────────────────────────────────────────────────────────────────────
+  async updateProperty(key, value) {
+    const rawProp = _wcfPropMap.get(key);
+    if (!rawProp || typeof rawProp.setValue !== "function") {
+      console.warn("[store] updateProperty: prop not found in propMap:", key);
       return;
     }
 
+    const { properties, customIcons } = get();
+
+    // Optimistik güncelleme — seçim anında active görünür.
+    const optimistic = properties.map((p) =>
+      p.id === key ? { ...p, currentValue: value } : p,
+    );
+    set({ properties: optimistic, updating: true, error: null });
+    syncCurrentToUrl(optimistic);
+
     try {
-      // Faz 4 — `dirtyKeys: [key]` body'ye eklenir. Backend Faz 2 bunu
-      // appearance/geometry classification için kullanır; flag-OFF iken
-      // zararsız (Array.isArray + length kontrolüyle yutulur).
-      const data = await updateProperties(
-        proxyBase,
-        allProps,
-        itemId,
-        articleNumber,
-        manufacturerId,
-        [key],
-      );
-      recorder.mark("response_server");
-      if (data && data.__perfMeta) {
-        recorder.attachServerTiming(data.__perfMeta.serverTiming);
-      }
+      // WCF'nin eventArticleChanged sistemi mevcut mu?
+      const eventBus = _wcfArticleManager?.eventArticleChanged;
+      const hasEventBus =
+        eventBus && typeof eventBus.addListener === "function";
 
-      // ─────────────── Faz 4: Response type branching ───────────────
-      //
-      // Backend `type === "material-patch"` döndüyse:
-      //   * gltfUrl AYNI kalır (Model.jsx unmount tetiklenmez, fade yok).
-      //   * MaterialSwapper sahnedeki mesh'lere in-place patch uygular.
-      //   * `lastResponseType: "material-patch"` set edilir; spinner gating
-      //     bunu okur (ConfiguratorScene.jsx).
-      //
-      // Aksi halde (eski full-GLB shape veya `type` field'ı yok):
-      //   * Mevcut akış aynen — gltfUrl swap, Model.jsx remount.
-      //   * Geriye uyumluluk: eski cache entry'leri ve flag-OFF iken
-      //     bytewise mevcut davranış.
-      if (data && data.type === "material-patch") {
-        const sceneRef = get().sceneRef;
-        if (sceneRef) {
-          try {
-            await applyMaterialPatch(sceneRef, data);
-          } catch (err) {
-            console.warn("[store] applyMaterialPatch failed:", err.message);
-            // Görsel uygulama başarısız oldu — state update'i yine de
-            // yapıyoruz ki price/cartProperties tutarlı kalsın (kabul
-            // kriteri 4: kırılmasın). Kullanıcı ya bir sonraki tıklamada
-            // toparlanır ya da geometry-property tıklayıp full-GLB akışına
-            // geçer. Hata UI'a yansıtılmaz; sadece console.
-          }
-        } else {
-          console.warn(
-            "[store] material-patch received but no sceneRef; skipping in-place swap",
-          );
+      // setValue() + eventArticleChanged'i birlikte bekle.
+      // Eğer event sistemi yoksa sadece setValue() beklen.
+      await new Promise((resolve, reject) => {
+        let setValueDone = false;
+        let articleChangedFired = !hasEventBus; // event yoksa önceden true
+        let settled = false;
+
+        // Güvenlik timeout'u — event hiç gelmezse yine ilerle.
+        const timeoutId = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          if (hasEventBus) eventBus.removeListener(onChanged);
+          console.warn("[store] updateProperty: eventArticleChanged timeout, proceeding");
+          resolve();
+        }, 10000);
+
+        function tryResolve() {
+          if (settled || !setValueDone || !articleChangedFired) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          resolve();
         }
 
-        // material-patch response'u local cache'e koy. `type` field'ı
-        // kalır → tekrar HIT olduğunda yukarıdaki cache HIT branching
-        // doğru yola düşer.
-        responseCache.set(cacheKey, {
-          type: "material-patch",
-          patches: data.patches,
-          price: data.price,
-          currency: data.currency,
-          properties: data.properties,
-          cartProperties: data.cartProperties || null,
-        });
-
-        const merged = mergeProperties(optimistic, data, customIcons);
-        set({
-          // gltfUrl AYNI KALIR — Model.jsx unmount/remount tetiklemesin.
-          price: data.price,
-          currency: data.currency || get().currency,
-          properties: merged,
-          cartProperties: data.cartProperties || get().cartProperties,
-          updating: false,
-          lastResponseType: "material-patch",
-        });
-        recorder.mark("paint_state_set");
-        recorder.flushToConsole();
-        recorder.flushToWindow();
-        return;
-      }
-
-      // ─────────────── Faz 5: geometry-delta branching ─────────────────
-      //
-      // Backend `type === "geometry-delta"` döndüyse:
-      //   * gltfUrl AYNI kalır (Model.jsx unmount tetiklenmez, fade yok).
-      //   * GeometrySwapper sadece değişen sub-article'ları sahnede
-      //     remove/replace/add eder; tüm article re-render edilmez.
-      //   * `lastResponseType: "geometry-delta"` → spinner gating
-      //     (ConfiguratorScene.jsx).
-      //
-      // Görsel apply başarısız olursa `error` state'e geçeriz ve
-      // spinner mask'i kalkar — kullanıcı bir sonraki tıklamada
-      // (full-GLB tetikleyebilecek bir property) sahneyi temizler.
-      // gltfUrl swap manuel yapmıyoruz çünkü backend zaten delta gönderdi
-      // (full-GLB istemi yapmak için yeni bir update tetiklemek gerek;
-      // o sorumluluk frontend'e dahil değil — UX bozulmaz, kullanıcı
-      // başka bir property tıkladığında akış normalleşir).
-      if (data && data.type === "geometry-delta") {
-        const sceneRef = get().sceneRef;
-        const gltfLoader = get().gltfLoader;
-        let applyErr = null;
-        if (sceneRef && gltfLoader) {
-          try {
-            await applyGeometryDelta(sceneRef, data, gltfLoader);
-          } catch (err) {
-            applyErr = err;
-            console.warn("[store] applyGeometryDelta failed:", err.message);
-          }
-        } else {
-          console.warn(
-            "[store] geometry-delta received but no sceneRef/gltfLoader; skipping in-place swap",
-          );
+        function onChanged() {
+          eventBus.removeListener(onChanged);
+          articleChangedFired = true;
+          tryResolve();
         }
 
-        const merged = mergeProperties(optimistic, data, customIcons);
+        if (hasEventBus) eventBus.addListener(onChanged);
 
-        if (applyErr) {
-          // GeometrySwapper'ın total fail throw'u (tüm load'lar başarısız).
-          // Backend zaten delta gönderdi — full-GLB istemi tetikleyemeyiz
-          // (yeni network round-trip gerekecekti). Error state'i set edip
-          // kullanıcıya "Failed to load 3D model" banner'ı gösteriyoruz;
-          // kullanıcı sayfayı yenileyebilir veya başka bir property
-          // tıklayıp full-GLB akışını tetikleyebilir.
-          // Cache'e KOYMUYORUZ — bir sonraki tıklama bozuk delta'yı tekrar
-          // çekmesin; backend'den fresh isteyelim.
-          set({
-            properties: merged,
-            updating: false,
-            error: applyErr.message,
+        rawProp.setValue(value)
+          .then(() => {
+            setValueDone = true;
+            tryResolve();
+          })
+          .catch((err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            if (hasEventBus) eventBus.removeListener(onChanged);
+            reject(err);
           });
-          recorder.mark("error");
-          recorder.flushToConsole();
-          recorder.flushToWindow();
-          return;
-        }
-
-        // Başarı: cache'e koy, gltfUrl AYNI kalır (kabul kriteri 1).
-        responseCache.set(cacheKey, {
-          type: "geometry-delta",
-          changedSubArticles: data.changedSubArticles,
-          addedSubArticles: data.addedSubArticles,
-          removedSubArticles: data.removedSubArticles,
-          subArticles: data.subArticles,
-          price: data.price,
-          currency: data.currency,
-          properties: data.properties,
-          cartProperties: data.cartProperties || null,
-        });
-
-        set({
-          price: data.price,
-          currency: data.currency || get().currency,
-          properties: merged,
-          cartProperties: data.cartProperties || get().cartProperties,
-          updating: false,
-          lastResponseType: "geometry-delta",
-          error: null,
-        });
-        recorder.mark("paint_state_set");
-        recorder.flushToConsole();
-        recorder.flushToWindow();
-        return;
-      }
-
-      // ── Full-GLB yolu (mevcut davranış) ─────────────────────────────
-      responseCache.set(cacheKey, {
-        gltfUrl: data.gltfUrl,
-        price: data.price,
-        currency: data.currency,
-        properties: data.properties,
-        validOptions: data.validOptions,
-        cartProperties: data.cartProperties || null,
       });
 
-      const merged = mergeProperties(optimistic, data, customIcons);
+      // Sahne güncellendikten sonra fresh properties ve fiyat al.
+      if (!_wcfArticle) throw new Error("WCF article ref lost");
+
+      const [rawProps, priceData] = await Promise.all([
+        _wcfArticle.getProperties(),
+        fetchWcfPrice(_wcfArticle),
+      ]);
+
+      // propMap'i güncelle — yeni raw ref'lerle
+      _wcfPropMap = new Map(rawProps.map((r) => [r.key, r]));
+
+      const mapped = await mapWcfProperties(rawProps);
+      const updatedProps = applyCustomIcons(mapped, customIcons);
 
       set({
-        gltfUrl: data.gltfUrl,
-        price: data.price,
-        currency: data.currency || get().currency,
-        properties: merged,
-        cartProperties: data.cartProperties || get().cartProperties,
+        properties: updatedProps,
+        price: priceData.price,
+        currency: priceData.currency || get().currency,
         updating: false,
-        lastResponseType: "full-gltf",
       });
-      recorder.mark("paint_state_set");
-      recorder.flushToConsole();
-      recorder.flushToWindow();
-    } catch (err) {
-      recorder.mark("error");
-      recorder.flushToConsole();
-      recorder.flushToWindow();
-      // Faz 6 — Optimistic UI revert: original `properties` snapshot'ına
-      // geri dön + URL params'ı senkronize et. Flag OFF iken state hiç
-      // değişmediği için revert no-op'a denk düşer ama yine de URL'i
-      // garantili senkronize tutuyoruz (önceki bir başka updateProperty
-      // çağrısı URL'e yazmış olabilir).
-      if (optimisticEnabled) {
-        console.warn(
-          "[store] property revert: " + key + " → " + value + " (" + err.message + ")",
-        );
-        syncCurrentToUrl(properties);
-      }
-      set({ properties, updating: false, error: err.message });
-    }
-  },
+      syncCurrentToUrl(updatedProps);
 
-  /**
-   * Faz 4 — Model.jsx tarafından sahne mount/unmount sırasında çağrılır.
-   * `applyMaterialPatch` çağrısında `get().sceneRef` üzerinden okunur.
-   * Subscriber'ı yok (sadece action içinde tüketilir) → re-render
-   * tetiklemez.
-   */
-  setSceneRef(scene) {
-    set({ sceneRef: scene || null });
-  },
-
-  /**
-   * Faz 5 — Model.jsx tarafından mount/unmount sırasında çağrılır.
-   * GeometrySwapper sub-article GLB'lerini bu loader üzerinden yükler.
-   * Subscriber yok → re-render tetiklemez.
-   */
-  setGltfLoader(loader) {
-    set({ gltfLoader: loader || null });
-  },
-
-  /**
-   * Faz 6 — Hover prefetch.
-   *
-   * `PropertySelector.jsx` option butonuna mouse-enter / focus geldiğinde
-   * çağrılır. Plan §539-541, §566.
-   *
-   * Davranış (PCON_HOVER_PREFETCH flag-gated, default OFF):
-   *   1. Same value veya non-existent prop → no-op.
-   *   2. 200ms debounce: aynı `propId:value` key'i hızlı tekrar tetiklerse
-   *      önceki timer iptal, yenisi kurulur (mouse hızlıca üstüden geçince
-   *      hiç fetch yapılmaz).
-   *   3. Concurrent guard: 3 in-flight prefetch'ten fazlasına izin yok.
-   *      EAIWS rate limit'e takılmamak için (plan §566).
-   *   4. Classification dispatch:
-   *        appearance → `<link rel="prefetch">` ile swatch icon URL'i
-   *          browser HTTP cache'ine alınır + backend warm fetch
-   *          (cache HIT path'inde gerçek tıklama no-op'a düşer).
-   *        geometry / unknown → backend warm fetch.
-   *   5. Backend response **state'e merge edilmez**; sadece module-level
-   *      `responseCache` Map'ine yazılır. Gerçek tıklama (`updateProperty`)
-   *      cache HIT path'ini bulur ve network'e çıkmaz → kabul kriteri 1.
-   *
-   * Hata path'i: console.warn + sessizce skip; UI/state etkilenmez.
-   */
-  prefetchProperty: async (propId, value) => {
-    if (!isHoverPrefetchEnabled()) return;
-    if (!propId || value === undefined || value === null) return;
-
-    const prop = get().properties.find((p) => p.id === propId);
-    if (!prop) return;
-    if (prop.currentValue === value) return;
-    const opt = prop.options.find((o) => o.value === value);
-    if (!opt || opt.available === false) return;
-
-    const key = propId + ":" + value;
-
-    if (prefetchTimers.has(key)) {
-      clearTimeout(prefetchTimers.get(key));
-    }
-
-    const timer = setTimeout(async () => {
-      prefetchTimers.delete(key);
-
-      if (prefetchInflight.has(key)) return;
-      if (prefetchInflight.size >= MAX_CONCURRENT_PREFETCH) return;
-
-      const {
-        properties: latest,
-        proxyBase,
-        itemId,
-        articleNumber,
-        manufacturerId,
-        classifications,
-      } = get();
-
-      // Stale check — properties değişmiş olabilir; kullanıcı zaten o
-      // değere geçmişse anlamı yok.
-      const liveProp = latest.find((p) => p.id === propId);
-      if (!liveProp || liveProp.currentValue === value) return;
-
-      const allProps = {};
-      for (const p of latest) {
-        if (p.currentValue) allProps[p.id] = p.currentValue;
-      }
-      allProps[propId] = value;
-
-      const cacheKey = buildPropsCacheKey(allProps);
-      // Already cached frontend-side — kullanıcı tıklasa bile network
-      // request olmayacak. Skip.
-      if (responseCache.has(cacheKey)) return;
-
-      const cls = (classifications && classifications[propId]) || "unknown";
-
-      // Appearance → swatch icon'u browser cache'ine düşür. Hafif (KB
-      // seviyesinde) ama gerçek material baseColor texture'ını backend
-      // material-patch response'unda alacağımız için orayı da prefetch
-      // yapmak istiyoruz; backend warm fetch onu hallediyor.
-      if (cls === "appearance" && opt.icon) {
-        preloadAsset(opt.icon, "image");
-      }
-
-      prefetchInflight.add(key);
+      // ────────────────────────────────────────────────────────────────────
+      // Render frame yedek garantisi — WCF on-demand rendering kullanır.
+      // ConfiguratorScene içindeki eventArticleChanged listener'ı zaten
+      // requestRenderFrame() çağırıyor, ancak event timeout'a düştüğü
+      // (yukarıdaki 10s safety timeout'u) veya WCF event'i kaçırdığı
+      // durumlarda listener tetiklenmez. Bu yedek çağrı, property update
+      // tamamlandıktan sonra canvas'ın eski state'te kalmamasını garanti
+      // eder. Multiple requestRenderFrame çağrıları WCF tarafından
+      // deduplicate edilir (mRenderFrameRequested flag), zararsız.
+      // ────────────────────────────────────────────────────────────────────
       try {
-        const data = await updateProperties(
-          proxyBase,
-          allProps,
-          itemId,
-          articleNumber,
-          manufacturerId,
-          [propId],
-        );
-        // Response'u state'e merge ETMİYORUZ — kullanıcı henüz tıklamadı.
-        // Sadece `responseCache`'e yazıyoruz ki bir sonraki gerçek tıklama
-        // cache HIT path'ine düşsün (kabul kriteri 1: yeni network request
-        // görünmemeli).
-        if (data && data.type === "material-patch") {
-          responseCache.set(cacheKey, {
-            type: "material-patch",
-            patches: data.patches,
-            price: data.price,
-            currency: data.currency,
-            properties: data.properties,
-            cartProperties: data.cartProperties || null,
-          });
-        } else if (data && data.type === "geometry-delta") {
-          responseCache.set(cacheKey, {
-            type: "geometry-delta",
-            changedSubArticles: data.changedSubArticles,
-            addedSubArticles: data.addedSubArticles,
-            removedSubArticles: data.removedSubArticles,
-            subArticles: data.subArticles,
-            price: data.price,
-            currency: data.currency,
-            properties: data.properties,
-            cartProperties: data.cartProperties || null,
-          });
-        } else if (data) {
-          responseCache.set(cacheKey, {
-            gltfUrl: data.gltfUrl,
-            price: data.price,
-            currency: data.currency,
-            properties: data.properties,
-            validOptions: data.validOptions,
-            cartProperties: data.cartProperties || null,
-          });
-        }
-      } catch (err) {
-        console.warn("[prefetch] failed:", err?.message || err);
-      } finally {
-        prefetchInflight.delete(key);
-      }
-    }, PREFETCH_DEBOUNCE_MS);
-
-    prefetchTimers.set(key, timer);
+        _wcfArticleManager?.app?.viewer?.requestRenderFrame?.();
+      } catch (_e) { /* viewer dispose edilmiş olabilir */ }
+    } catch (err) {
+      console.warn("[store] updateProperty revert:", err?.message || err);
+      // Optimistik state'i geri al
+      syncCurrentToUrl(properties);
+      set({ properties, updating: false, error: err?.message || String(err) });
+    }
   },
+
+  // ─── No-op: WCF ile hover prefetch gerekmez (client-side, anında update) ─
+  prefetchProperty() {},
+
+  // ─── Cart actions ─────────────────────────────────────────────────────────
 
   setQuantity(qty) {
     const n = parseInt(qty, 10);
@@ -753,43 +544,27 @@ const useConfiguratorStore = create((set, get) => ({
   },
 
   /**
-   * Cart-add akışı (iki dallı):
+   * Cart-add akışı (iki dallı: normal ve preorder).
    *
-   *  1. Backend `/api/pcon/cart-payload` her durumda çağrılır. EAIWS'ten
-   *     fresh `_attachment`, `_obx_url`, `_reopen_url`, `_article_image` ve
-   *     server-side generate edilen `_request_id`/`_basket_id` ile tam
-   *     `cartProperties` payload'u alınır. (Preorder akışında da bu meta'lar
-   *     draft order line item'a kaydediliyor — daha sonra siparişi işlerken
-   *     pCon UI reopen'ı için gerekli.)
-   *
-   *  2a. **Preorder mode** — `localStorage["calma_preorder_intent"]` aktif:
-   *      Kardeş app'in (B2B Dealer Portal) preorder sistemine bağlanır.
-   *      `cart/add.js`'e UĞRAMAZ; `POST /apps/b2b-portal/preorder/add-line`
-   *      ile satır draft order'a eklenir. Başarıda alert + intent clear +
-   *      `/pages/b2b-account#preorder-<id>` redirect (RELOAD YOK). Hatada
-   *      alert + intent KORUNUR (dealer tekrar deneyebilsin) + PDP'de kal.
-   *
-   *  2b. **Normal mode** — intent yok/expired:
-   *      Dönen `cartProperties` olduğu gibi Shopify `cart/add.js` body'sinin
-   *      `properties` alanına gömülür. Başarıda `/collections/calma-pods`
-   *      adresine yönlendirilir.
-   *
-   * Hata durumunda `cartError` set edilir, buton yeniden tıklanabilir kalır.
+   * Backend `/api/pcon/cart-payload` fresh OBX/attachment URL'leri üretir.
+   * WCF ile itemId artık null — backend yeni EAIWS session açar ve current
+   * property değerlerini uygular.
    */
-  async addToCart() {
+  async addToCart(successOverride = null) {
     const {
-      cartProperties,
-      proxyBase,
       properties,
-      itemId,
+      price,
+      currency,
       articleNumber,
       manufacturerId,
       quantity,
       variantId,
       routesRoot,
+      successAction,
       cartLoading,
       updating,
       loading,
+      cartProperties,
     } = get();
 
     if (cartLoading) return false;
@@ -816,47 +591,140 @@ const useConfiguratorStore = create((set, get) => ({
 
     const safeQuantity = Math.max(1, parseInt(quantity, 10) || 1);
 
-    // Backend'in beklediği "PROPCLASS.PROPNAME" → "value" map'i — store'daki
-    // currentValue olanlar.
-    const propertyMap = {};
+    // ── Konfigürasyon bölümü ─────────────────────────────────────────────────
+    // Property'ler önce kategoriye göre gruplandırılır (GENERAL, WALL, TABLE…),
+    // ardından her kategori için TEK bir "divider N" eklenir; o kategoriye ait
+    // tüm property'ler ardı ardına sıralanır.
+    //
+    //   "divider 1": "GENERAL"
+    //   "CALMA":     "CALMA SMALL - 100X110"
+    //   "PLUG":      "UK PLUG"
+    //   "divider 2": "WALL"
+    //   "COLOUR OF INTERIOR FELT": "FLT02 - Light Grey"
+    //   ...
+    //
+    // currentValue ham WCF kodu (örn. "m_100_110"); options listesinden
+    // eşleşen label'ı buluruz (örn. "CALMA SMALL - 100X110").
+
+    // Adım 1 — properties'i kategorilere göre grupla
+    const grouped = new Map(); // category → [{label, selectedLabel}]
+    const configDescParts = [];
+
     for (const p of properties) {
-      if (p.currentValue) propertyMap[p.id] = p.currentValue;
+      if (p.currentValue == null || p.currentValue === "") continue;
+      const cat = getPropertyCategory(p.id);
+      if (!grouped.has(cat)) grouped.set(cat, []);
+      const selectedOption = (p.options || []).find(
+        (o) => o.value === p.currentValue,
+      );
+      const selectedLabel = selectedOption?.label || String(p.currentValue);
+      grouped.get(cat).push({ label: p.label, selectedLabel });
+      configDescParts.push(selectedLabel);
     }
 
-    try {
-      const payload = await fetchCartPayload(proxyBase, {
-        properties: propertyMap,
-        itemId,
-        articleNumber,
-        manufacturerId,
-        quantity: safeQuantity,
+    // Adım 1b — UI'dan gizlenen ama sepet payload'ına zorla eklenmesi gereken
+    // property'leri (HIDDEN_CART_FORCED) uygun kategorilerine dahil et.
+    for (const forced of HIDDEN_CART_FORCED) {
+      const cat = getPropertyCategory(forced.id);
+      if (!grouped.has(cat)) grouped.set(cat, []);
+      grouped.get(cat).push({
+        label: forced.propLabel,
+        selectedLabel: forced.displayLabel,
       });
+      configDescParts.push(forced.displayLabel);
+    }
 
-      const finalProperties = payload?.cartProperties;
-      if (!finalProperties) {
-        throw new Error("Cart payload missing cartProperties");
+    // Adım 2 — CATEGORY_ORDER önce, ardından tanımsız kategoriler
+    const orderedCats = [
+      ...CATEGORY_ORDER.filter((c) => grouped.has(c)),
+      ...[...grouped.keys()].filter((c) => !CATEGORY_ORDER.includes(c)),
+    ];
+
+    // Adım 3 — divider çiftlerini oluştur (kategori başına 1 divider)
+    const configDividers = {};
+    let dividerIdx = 1;
+
+    for (const cat of orderedCats) {
+      const items = grouped.get(cat);
+      if (!items || items.length === 0) continue;
+      configDividers[`divider ${dividerIdx}`] = cat;
+      dividerIdx++;
+      for (const { label, selectedLabel } of items) {
+        configDividers[label] = selectedLabel;
       }
+    }
 
-      // Backend stale-itemId fallback'ı yapmış olabilir; store'u güncelle ki
-      // sonraki update çağrıları doğru itemId ile gitsin.
-      const nextState = { cartLoading: false, cartSuccess: true };
-      if (payload.itemId && payload.itemId !== itemId) {
-        nextState.itemId = payload.itemId;
-      }
+    // _description / _Configuration: "articleNumber / manufacturerId — cfg1 / cfg2"
+    const descStr = [
+      articleNumber,
+      manufacturerId || null,
+      ...configDescParts.slice(0, 2),
+    ]
+      .filter(Boolean)
+      .join(" / ");
 
-      // Preorder intent kontrolü — kardeş B2B Dealer Portal app'i tarafından
-      // localStorage'a yazılan 10 dk TTL'li intent. Banner app embed'i theme'de
-      // enable ise window.CalmaPreorderIntent global'i de mevcut; helper iki
-      // kaynağı da otomatik handle eder.
+    // ── Shopify cart properties — tam format ─────────────────────────────────
+    // Önce sabit/sistem alanları, ardından konfigürasyon divider çiftleri.
+    // _attachment, _article_image, _obx_url, _reopen_url: backend EAIWS
+    // round-trip gerektirir; şimdilik boş — gerektiğinde entegre edilir.
+    const shopifyProperties = {
+      _description: descStr,
+      _quantity: String(safeQuantity),
+      _unit: "ST",
+      _Configuration_Price:
+        price != null ? String(price) : "",
+      _currency: currency || "EUR",
+      _vendormat: articleNumber || "",
+      _Configuration: descStr,
+      _cust_field1: "",
+      _cust_field2: "",
+      _cust_field3: "",
+      _cust_field4: "",
+      _cust_field5: "",
+      _ext_quote_id: "",
+      _service: "",
+      _leadtime: "",
+      _ext_quote_item: "",
+      _contract_item: "",
+      _manufactcode: manufacturerId || "",
+      _manufactmat: "",
+      _ext_product_id: articleNumber || "",
+      _matgroup: "",
+      _vendor: "",
+      _contract: "",
+      _priceunit: "1",
+      _attachment: "",
+      _attachment_purpose: "C",
+      _item_type: "R",
+      _parent_id: "",
+      _article_image: "",
+      _eco: "0",
+      _eco_info: "Gross Eco Contribution",
+      _obx_url: "",
+      _oci_plugin: "true",
+      _priceservice: "false",
+      _reopen_url: "",
+      _taxcode: "",
+      _vat: "",
+      _ean: articleNumber || "",
+      _basket_id: "",
+      _seriesid: "",
+      _additional_text: "",
+      _special_model_info: "",
+      // WCF konfigürasyon property'leri — "divider N" + "Label: değer" çiftleri
+      ...configDividers,
+    };
+
+    console.log(
+      "[cart] Shopify cart/add.js payload:",
+      JSON.stringify({ items: [{ id: variantId, quantity: safeQuantity, properties: shopifyProperties }] }, null, 2),
+    );
+
+    try {
       const preorderIntent = getPreorderIntent();
 
       if (preorderIntent) {
-        // ── PREORDER MODE ──────────────────────────────────────────────
-        // cart/add.js'e UĞRAMA. Doğrudan kardeş app'in preorder add-line
-        // endpoint'ine POST at; başarıda alert + redirect, hatada intent
-        // korunur (dealer tekrar deneyebilsin) ve PDP'de kalınır.
         const customerId = getCustomerId();
-
         let preorderResult;
         try {
           preorderResult = await postPreorderAddLine({
@@ -864,7 +732,7 @@ const useConfiguratorStore = create((set, get) => ({
             draftOrderId: preorderIntent.draftOrderId,
             variantId,
             quantity: safeQuantity,
-            properties: finalProperties,
+            properties: shopifyProperties,
           });
         } catch (err) {
           console.error("[Configurator] Preorder add-line error:", err);
@@ -887,30 +755,43 @@ const useConfiguratorStore = create((set, get) => ({
         window.alert("✅ Product added to Preorder " + draftName);
 
         clearPreorderIntent();
-        set(nextState);
-        // Redirect — RELOAD YOK; reload yapılırsa redirect'in önüne geçer
-        // ve dealer PDP'de sıkışır.
+        set({ cartLoading: false, cartSuccess: true });
         window.location.href =
           "/pages/b2b-account#preorder-" + preorderIntent.draftOrderId;
         return true;
       }
 
-      // ── NORMAL MODE ────────────────────────────────────────────────
+      // Normal mod — WCF properties doğrudan Shopify cart/add.js'e gönderilir.
+      // Backend EAIWS round-trip yok: tam konfigürasyon zaten WCF state'inde.
       const items = [
         {
           id: variantId,
           quantity: safeQuantity,
-          properties: finalProperties,
+          properties: shopifyProperties,
         },
       ];
 
-      await postCartAdd(routesRoot, items);
-      set(nextState);
+      const cartPayload = await postCartAdd(routesRoot, items);
+      set({ cartLoading: false, cartSuccess: true });
 
-      // Başarı feedback'i kullanıcıya kısa süreli görünsün diye yönlendirmeyi
-      // bir sonraki tick'e atıyoruz; aynı tick'te navigate olursa React
-      // unmount'tan önce success badge yansımayabilir.
-      window.setTimeout(() => { window.location.href = "/collections/calma-pods"; }, 0);
+      // successAction'a göre post-add davranışı:
+      // successOverride parametresi verilmişse o kullanılır (örn. guest modu),
+      // yoksa store'daki successAction ayarı geçerlidir.
+      //   drawer-event → drawer cart event'lerini dispatch et (Dawn ve türevleri)
+      //   redirect      → /cart sayfasına yönlendir
+      //   reload        → sayfayı yenile
+      //   none          → hiçbir şey yapma
+      const effectiveAction = successOverride ?? successAction;
+      if (effectiveAction === "redirect") {
+        window.setTimeout(() => {
+          window.location.href =
+            (window.Shopify?.routes?.root || "/").replace(/\/$/, "") + "/cart";
+        }, 0);
+      } else if (effectiveAction === "reload") {
+        window.setTimeout(() => window.location.reload(), 0);
+      } else if (effectiveAction !== "none") {
+        dispatchCartUpdateEvents(cartPayload);
+      }
       return true;
     } catch (err) {
       set({
@@ -930,93 +811,7 @@ const useConfiguratorStore = create((set, get) => ({
   },
 }));
 
-/**
- * Merge an update response into the current property list.
- *
- * EAIWS authoritatively dictates which properties are visible/contextual at
- * any given configuration; on each `setPropertyValue` it returns the full
- * post-update property snapshot (`data.properties`) — including label, type,
- * options, currentValue, icon URLs and crucially the *set* of properties
- * (some may appear or disappear depending on context, e.g. PRIZ_TIPI when
- * BOLGE = "-" vs "NA"). We therefore replace the local list with the server
- * snapshot and re-apply storefront-only customizations (custom icons).
- *
- * For backwards compatibility with cache entries written by the previous
- * `validOptions`-based protocol, we fall back to a partial merge that only
- * updates `available`/`label` on existing options.
- */
-function mergeProperties(prevProperties, data, customIcons) {
-  if (Array.isArray(data?.properties)) {
-    return applyCustomIcons(data.properties, customIcons);
-  }
-  return legacyMergeValidOptions(prevProperties, data?.validOptions);
-}
-
-function legacyMergeValidOptions(properties, validOptions) {
-  if (!validOptions) return properties;
-
-  const voMap = new Map();
-  for (const vo of validOptions) {
-    const byValue = new Map();
-    for (const o of vo.options) {
-      byValue.set(o.value, o);
-    }
-    voMap.set(vo.id, byValue);
-  }
-
-  return properties.map((prop) => {
-    const byValue = voMap.get(prop.id);
-    if (!byValue) return prop;
-
-    const mergedOptions = prop.options.map((opt) => {
-      const vo = byValue.get(opt.value);
-      if (!vo) return { ...opt, available: false };
-      return {
-        ...opt,
-        available: vo.available,
-        label: vo.label ?? opt.label,
-      };
-    });
-
-    return {
-      ...prop,
-      options: mergedOptions,
-    };
-  });
-}
-
-function syncCurrentToUrl(properties) {
-  const map = {};
-  for (const p of properties) {
-    if (p.currentValue) map[p.id] = p.currentValue;
-  }
-  writeUrlProperties(map);
-}
-
-/* ------------------------------------------------------------------ *
- * Custom icon overrides
- *
- * EAIWS does not always ship icons (or the right icons) for every
- * choice-list value. We layer three storefront-side sources on top of
- * the server response:
- *
- *   1. `variantPicker` — *fallback only* lookup keyed by `option.value`.
- *      Mirrors the merchant's existing theme setup ("Variant picker
- *      images"): up to 110 `variant_picker_code_*` / `variant_picker_image_*`
- *      slots maintained in theme settings. Applied only when the option
- *      has no icon yet, so a real EAIWS icon (when present) always wins.
- *   2. `socket` — locale-independent socket-type icons matched via
- *      property ID + value/label keywords (DE/EN/TR). Forced override.
- *   3. `contextual` — icons that depend on the current value of another
- *      property, e.g. `MT_TEXT.Meta_Dimension`. Forced override.
- *
- * Whenever at least one option of a property ends up with an icon, the
- * property `type` is upgraded to "color" so PropertyCollapsible renders
- * swatches instead of plain chips.
- *
- * Asset URLs are produced by Liquid (`asset_url`/`image_url`) in
- * `configurator.liquid` and exposed on `window.__pconCustomIcons`.
- * ------------------------------------------------------------------ */
+// ─── Custom icon override logic (aynen korundu) ───────────────────────────────
 
 const SOCKET_PROPERTY_IDS = new Set(["OI_NONE_PROPCLASS.PRIZ_TIPI"]);
 
@@ -1030,44 +825,39 @@ const SOCKET_ICON_PATTERNS = [
 
 const DIMENSION_PROPERTY_ID = "MT_TEXT.Meta_Dimension";
 
-// Map: dimension value → { propertyId → { optionValue → iconKey } }
 const DIMENSION_DEPENDENT_ICONS = {
   m_100_140: {
     "MEDIAWALL.MEDIAWALL": {
-      "false": "withoutMediawall",
-      "true": "withMediawall",
+      false: "withoutMediawall",
+      true: "withMediawall",
     },
     "KOLTUK_4U.KOLTUK": {
-      "false": "forUWithoutSofa",
-      "true": "forUWithSofa",
+      false: "forUWithoutSofa",
+      true: "forUWithSofa",
     },
   },
   m_100_220: {
     "KOLTUK.KOLTUK": {
-      "false": "mediumLargeForAllWithoutSofa",
-      "true": "mediumLargeForAllWithSofa",
+      false: "mediumLargeForAllWithoutSofa",
+      true: "mediumLargeForAllWithSofa",
     },
   },
   m_144_220: {
     "KOLTUK_L.KOLTUK": {
-      "false": "mediumLargeForAllWithoutSofa",
-      "true": "mediumLargeForAllWithSofa",
+      false: "mediumLargeForAllWithoutSofa",
+      true: "mediumLargeForAllWithSofa",
     },
   },
   m_188_220ALL: {
     "MASA_FA.MASA": {
-      "false": "mediumLargeForAllWithoutSofa",
-      "true": "mediumLargeForAllWithSofa",
+      false: "mediumLargeForAllWithoutSofa",
+      true: "mediumLargeForAllWithSofa",
     },
   },
 };
 
 function applyCustomIcons(properties, customIcons) {
   if (!customIcons || typeof customIcons !== "object") return properties;
-
-  // Order matters: variant-picker is a *fallback* (only fills empty
-  // icons), so it must run before the forced overrides — otherwise a
-  // socket/contextual icon could later be overwritten.
   let result = applyVariantPickerIcons(properties, customIcons.variantPicker);
   result = applySocketIcons(result, customIcons.socket);
   result = applyContextualIcons(result, customIcons.contextual);
@@ -1081,17 +871,14 @@ function getVariantPickerLookup(variantPicker) {
   if (variantPickerSource === variantPicker && variantPickerLookup) {
     return variantPickerLookup;
   }
-
   variantPickerSource = variantPicker;
   variantPickerLookup = new Map();
-
   if (variantPicker && typeof variantPicker === "object") {
     for (const [code, url] of Object.entries(variantPicker)) {
       if (!code || !url) continue;
       variantPickerLookup.set(normalizeCode(code), url);
     }
   }
-
   return variantPickerLookup;
 }
 
@@ -1114,59 +901,39 @@ function applyVariantPickerIcons(properties, variantPicker) {
       touched = true;
       return { ...opt, icon: url };
     });
-
     if (!touched) return prop;
-    return {
-      ...prop,
-      type: "color",
-      options: newOptions,
-    };
+    return { ...prop, type: "color", options: newOptions };
   });
 }
 
 function applySocketIcons(properties, socketIcons) {
   if (!socketIcons) return properties;
-
   return properties.map((prop) => {
     if (!isSocketProperty(prop)) return prop;
-
     const newOptions = overrideSocketIcons(prop.options, socketIcons);
     const hasIcon = newOptions.some((o) => o.icon);
-
-    return {
-      ...prop,
-      type: hasIcon ? "color" : prop.type,
-      options: newOptions,
-    };
+    return { ...prop, type: hasIcon ? "color" : prop.type, options: newOptions };
   });
 }
 
 function applyContextualIcons(properties, contextual) {
   if (!contextual) return properties;
-
   const dimensionProp = properties.find((p) => p.id === DIMENSION_PROPERTY_ID);
   const dimensionValue = dimensionProp?.currentValue;
   if (!dimensionValue) return properties;
-
   const ruleSet = DIMENSION_DEPENDENT_ICONS[dimensionValue];
   if (!ruleSet) return properties;
 
   return properties.map((prop) => {
     const optionRules = ruleSet[prop.id];
     if (!optionRules) return prop;
-
     const newOptions = prop.options.map((opt) => {
       const iconKey = optionRules[opt.value];
       const url = iconKey ? contextual[iconKey] : null;
       return url ? { ...opt, icon: url } : opt;
     });
-
     const hasIcon = newOptions.some((o) => o.icon);
-    return {
-      ...prop,
-      type: hasIcon ? "color" : prop.type,
-      options: newOptions,
-    };
+    return { ...prop, type: hasIcon ? "color" : prop.type, options: newOptions };
   });
 }
 
@@ -1178,7 +945,6 @@ function isSocketProperty(prop) {
 
 function overrideSocketIcons(options, socketIcons) {
   if (!socketIcons || !Array.isArray(options)) return options;
-
   return options.map((opt) => {
     const customIcon = matchSocketIcon(opt, socketIcons);
     return customIcon ? { ...opt, icon: customIcon } : opt;

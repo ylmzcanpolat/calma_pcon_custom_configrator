@@ -1,7 +1,15 @@
 import { useEffect } from "react";
+import PropTypes from "prop-types";
 import useConfiguratorStore from "../store/configurator-store.js";
 
-export default function AddToCartButton() {
+/**
+ * @param {{ isGuest?: boolean }} props
+ *   isGuest — true olduğunda:
+ *     - Buton etiketi "Request a Quote" gösterir (addToCartLabel yerine)
+ *     - Sepete ekleme başarılı olunca ana sayfaya (/) yönlendirir
+ *     - Drawer event ve /cart redirect tetiklenmez (successOverride="none")
+ */
+export default function AddToCartButton({ isGuest = false }) {
   const quantity = useConfiguratorStore((s) => s.quantity);
   const setQuantity = useConfiguratorStore((s) => s.setQuantity);
   const addToCart = useConfiguratorStore((s) => s.addToCart);
@@ -32,9 +40,18 @@ export default function AddToCartButton() {
     setQuantity(Math.max(1, (parseInt(quantity, 10) || 1) + delta));
   };
 
-  const handleClick = () => {
+  const handleClick = async () => {
     if (disabled) return;
-    addToCart();
+    if (isGuest) {
+      // Guest modu: drawer/redirect tetiklemeden sepete ekle,
+      // başarı sonrası ana sayfaya yönlendir.
+      const success = await addToCart("none");
+      if (success) {
+        window.location.href = window.Shopify?.routes?.root || "/";
+      }
+    } else {
+      addToCart();
+    }
   };
 
   return (
@@ -88,6 +105,8 @@ export default function AddToCartButton() {
             <span className="pcon-cart__btn-spinner" aria-hidden="true" />
             <span>Adding...</span>
           </>
+        ) : isGuest ? (
+          "Request a Quote"
         ) : (
           addToCartLabel || "Add to Cart"
         )}
@@ -107,3 +126,7 @@ export default function AddToCartButton() {
     </div>
   );
 }
+
+AddToCartButton.propTypes = {
+  isGuest: PropTypes.bool,
+};

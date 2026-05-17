@@ -1,6 +1,8 @@
 {% if product.metafields['$app'].pcon_article_number.value != blank %}
 <link rel="preconnect" href="https://s2.eaiws.pcon-solutions.com" crossorigin>
 <link rel="dns-prefetch" href="https://s2.eaiws.pcon-solutions.com">
+<link rel="preconnect" href="https://gatekeeper.eaiws.pcon-solutions.com" crossorigin>
+<link rel="dns-prefetch" href="https://gatekeeper.eaiws.pcon-solutions.com">
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 
 <script>
@@ -58,6 +60,7 @@
   data-manufacturer-id="{{ product.metafields['$app'].pcon_manufacturer_id.value }}"
   data-shop-domain="{{ shop.permanent_domain }}"
   data-proxy-base="/apps/pcon-configurator"
+  data-gatekeeper-id="{{ block.settings.pcon_gatekeeper_id }}"
   data-currency="{{ shop.currency }}"
   data-canvas-height="{{ block.settings.canvas_height }}"
   data-environment-preset="{{ block.settings.environment_preset }}"
@@ -65,6 +68,7 @@
   data-variant-id="{{ product.selected_or_first_available_variant.id }}"
   data-routes-root="{{ routes.root_url }}"
   data-add-to-cart-label="{{ block.settings.add_to_cart_label | escape }}"
+  data-success-action="{{ block.settings.success_action }}"
   data-customer-logged-in="{% if customer %}true{% else %}false{% endif %}"
   style="width: 100%; min-height: {{ block.settings.canvas_height }}px;"
 >
@@ -113,6 +117,16 @@
     },
     {
       "type": "header",
+      "content": "pCon Connection"
+    },
+    {
+      "type": "text",
+      "id": "pcon_gatekeeper_id",
+      "label": "pCon Gatekeeper ID",
+      "info": "Your pCon Gatekeeper ID. Leave empty to use the secure backend proxy."
+    },
+    {
+      "type": "header",
       "content": "Add to Cart"
     },
     {
@@ -120,6 +134,18 @@
       "id": "add_to_cart_label",
       "label": "Add to Cart button label",
       "default": "Add to Cart"
+    },
+    {
+      "type": "select",
+      "id": "success_action",
+      "label": "After adding to cart",
+      "options": [
+        { "value": "drawer-event", "label": "Open cart drawer" },
+        { "value": "redirect", "label": "Go to cart page" },
+        { "value": "reload", "label": "Reload page" },
+        { "value": "none", "label": "Do nothing" }
+      ],
+      "default": "drawer-event"
     }
   ]
 }

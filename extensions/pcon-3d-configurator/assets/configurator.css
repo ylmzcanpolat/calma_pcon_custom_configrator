@@ -138,6 +138,27 @@
   color: #1a1a1a;
 }
 
+/* Fiyat bekleme (pricing procedure henüz tamamlanmamış) */
+.pcon-price--pending .pcon-price__value--pending {
+  display: flex;
+  align-items: center;
+}
+
+.pcon-price__skeleton {
+  display: inline-block;
+  width: 120px;
+  height: 28px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #e8e8e8 25%, #f5f5f5 50%, #e8e8e8 75%);
+  background-size: 200% 100%;
+  animation: pcon-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes pcon-skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 /* Property Selector Panel */
 .pcon-properties {
   display: flex;

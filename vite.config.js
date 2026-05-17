@@ -53,6 +53,7 @@ export default defineConfig({
     assetsInlineLimit: 0,
   },
   optimizeDeps: {
-    include: ["@shopify/app-bridge-react"],
+    exclude: ["@easterngraphics/wcf", "@babylonjs/core"],
+    include: ["@shopify/app-bridge-react", "jszip"],
   },
 });
