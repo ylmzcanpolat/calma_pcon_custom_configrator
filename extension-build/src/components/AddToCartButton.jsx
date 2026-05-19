@@ -2,12 +2,13 @@ import { useEffect } from "react";
 import PropTypes from "prop-types";
 import useConfiguratorStore from "../store/configurator-store.js";
 
+const REDIRECT_AFTER_CART = "/collections/calma-pods";
+
 /**
  * @param {{ isGuest?: boolean }} props
- *   isGuest — true olduğunda:
- *     - Buton etiketi "Request a Quote" gösterir (addToCartLabel yerine)
- *     - Sepete ekleme başarılı olunca ana sayfaya (/) yönlendirir
- *     - Drawer event ve /cart redirect tetiklenmez (successOverride="none")
+ *   isGuest — true olduğunda buton etiketi "Request a Quote" gösterir.
+ *   Her iki durumda da (dealer + guest) sepete başarılı ekleme sonrası
+ *   REDIRECT_AFTER_CART adresine yönlendirme yapılır.
  */
 export default function AddToCartButton({ isGuest = false }) {
   const quantity = useConfiguratorStore((s) => s.quantity);
@@ -42,15 +43,11 @@ export default function AddToCartButton({ isGuest = false }) {
 
   const handleClick = async () => {
     if (disabled) return;
-    if (isGuest) {
-      // Guest modu: drawer/redirect tetiklemeden sepete ekle,
-      // başarı sonrası ana sayfaya yönlendir.
-      const success = await addToCart("none");
-      if (success) {
-        window.location.href = window.Shopify?.routes?.root || "/";
-      }
-    } else {
-      addToCart();
+    // "none" → store drawer/redirect tetiklemez; yönlendirmeyi biz yapıyoruz.
+    const success = await addToCart("none");
+    if (success) {
+      const routesRoot = (window.Shopify?.routes?.root || "/").replace(/\/$/, "");
+      window.location.href = routesRoot + REDIRECT_AFTER_CART;
     }
   };
 

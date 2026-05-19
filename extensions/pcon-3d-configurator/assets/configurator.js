@@ -18,6 +18,7 @@
     addToCartLabel: root.dataset.addToCartLabel || "Add to Cart",
     successAction: root.dataset.successAction || "drawer-event",
     customerLoggedIn: root.dataset.customerLoggedIn === "true",
+    discountPercentage: parseFloat(root.dataset.discountPercentage) || null,
   };
 
   if (!config.articleNumber) {

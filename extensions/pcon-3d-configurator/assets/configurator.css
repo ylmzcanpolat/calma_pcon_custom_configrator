@@ -138,6 +138,35 @@
   color: #1a1a1a;
 }
 
+/* Discount + Net Price satırları */
+.pcon-price-block {
+  display: flex;
+  flex-direction: column;
+}
+
+.pcon-price--discount {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.pcon-price--discount .pcon-price__value--discount {
+  font-size: 18px;
+  color: #c0392b;
+}
+
+.pcon-price--net {
+  padding-top: 4px;
+  padding-bottom: 12px;
+  border-top: 1px solid #e5e5e5;
+  margin-top: 4px;
+}
+
+.pcon-price--net .pcon-price__value--net {
+  font-size: 20px;
+  color: #1a1a1a;
+  font-weight: 700;
+}
+
 /* Fiyat bekleme (pricing procedure henüz tamamlanmamış) */
 .pcon-price--pending .pcon-price__value--pending {
   display: flex;

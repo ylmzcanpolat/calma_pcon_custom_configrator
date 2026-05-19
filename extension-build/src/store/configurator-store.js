@@ -80,7 +80,7 @@ const CATEGORY_ORDER = [
 const PROPERTY_ORDER = [
   "[Character]NRUS_DOSEME_SERI_DUVAR",
   "[Character]NRUS_DOSEME_RENK_DUVAR",
-  '[Character]NRUS_DOSEME_RENK_DUVAR',
+  "[Character]NRUS_YUZEY_RENK_DUVAR",
   "[Character]NRUS_KECE_RENK_DUVAR",
   "[Character]NRUS_YUZEY_RENK_MASA",
   "[Character]NRUS_HALI_RENK",
@@ -259,6 +259,8 @@ const useConfiguratorStore = create((set, get) => ({
   routesRoot: "/",
   addToCartLabel: "Add to Cart",
   successAction: "drawer-event",
+  // null → metafield yok veya customer login değil → discount gösterilmez
+  discountPercentage: null,
 
   // ── UI State ─────────────────────────────────────────────────────────────
   loading: false,
@@ -291,6 +293,7 @@ const useConfiguratorStore = create((set, get) => ({
       routesRoot: config.routesRoot || "/",
       addToCartLabel: config.addToCartLabel || "Add to Cart",
       successAction: config.successAction || "drawer-event",
+      discountPercentage: config.discountPercentage ?? null,
       loading: true,
       error: null,
       properties: [],
