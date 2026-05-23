@@ -71,6 +71,9 @@
   data-success-action="{{ block.settings.success_action }}"
   data-customer-logged-in="{% if customer %}true{% else %}false{% endif %}"
   data-discount-percentage="{% if customer %}{{ customer.metafields.custom.discount_percentage | default: '' }}{% endif %}"
+  data-product-title="{{ product.title | escape }}"
+  data-product-image="{% if product.featured_image %}{{ product.featured_image | img_url: '200x200' }}{% endif %}"
+  data-customer-name="{% if customer %}{{ customer.name | escape }}{% endif %}"
   style="width: 100%; min-height: {{ block.settings.canvas_height }}px;"
 >
   <div class="pcon-skeleton">

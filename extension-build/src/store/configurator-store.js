@@ -261,6 +261,9 @@ const useConfiguratorStore = create((set, get) => ({
   successAction: "drawer-event",
   // null → metafield yok veya customer login değil → discount gösterilmez
   discountPercentage: null,
+  productTitle: "",
+  productImageUrl: "",
+  customerName: "",
 
   // ── UI State ─────────────────────────────────────────────────────────────
   loading: false,
@@ -294,6 +297,9 @@ const useConfiguratorStore = create((set, get) => ({
       addToCartLabel: config.addToCartLabel || "Add to Cart",
       successAction: config.successAction || "drawer-event",
       discountPercentage: config.discountPercentage ?? null,
+      productTitle: config.productTitle || "",
+      productImageUrl: config.productImageUrl || "",
+      customerName: config.customerName || "",
       loading: true,
       error: null,
       properties: [],
@@ -811,6 +817,81 @@ const useConfiguratorStore = create((set, get) => ({
 
   setError(error) {
     set({ error });
+  },
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // exportRequest — "Add to Request" butonu için Excel indirme aksiyonu.
+  //
+  // addToCart() ile aynı configDividers yapısını kullanır (fiyat hariç).
+  // Gerçek cart-add yapılmaz; yalnızca xlsx dosyası oluşturulup indirilir.
+  // ──────────────────────────────────────────────────────────────────────────
+  async exportRequest() {
+    const {
+      properties,
+      articleNumber,
+      manufacturerId,
+      quantity,
+      productTitle,
+      productImageUrl,
+      customerName,
+    } = get();
+
+    const safeQuantity = Math.max(1, parseInt(quantity, 10) || 1);
+
+    // configDividers — addToCart() ile aynı kategori / divider mantığı
+    const grouped = new Map();
+    for (const p of properties) {
+      if (p.currentValue == null || p.currentValue === "") continue;
+      const cat = getPropertyCategory(p.id);
+      if (!grouped.has(cat)) grouped.set(cat, []);
+      const selectedOption = (p.options || []).find(
+        (o) => o.value === p.currentValue,
+      );
+      const selectedLabel = selectedOption?.label || String(p.currentValue);
+      grouped.get(cat).push({ label: p.label, selectedLabel });
+    }
+
+    for (const forced of HIDDEN_CART_FORCED) {
+      const cat = getPropertyCategory(forced.id);
+      if (!grouped.has(cat)) grouped.set(cat, []);
+      grouped.get(cat).push({
+        label: forced.propLabel,
+        selectedLabel: forced.displayLabel,
+      });
+    }
+
+    const orderedCats = [
+      ...CATEGORY_ORDER.filter((c) => grouped.has(c)),
+      ...[...grouped.keys()].filter((c) => !CATEGORY_ORDER.includes(c)),
+    ];
+
+    const configDividers = {};
+    let dividerIdx = 1;
+    for (const cat of orderedCats) {
+      const items = grouped.get(cat);
+      if (!items || items.length === 0) continue;
+      configDividers[`divider ${dividerIdx}`] = cat;
+      dividerIdx++;
+      for (const { label, selectedLabel } of items) {
+        configDividers[label] = selectedLabel;
+      }
+    }
+
+    try {
+      const { exportToExcel } = await import("../utils/excel-export.js");
+      await exportToExcel({
+        articleNumber,
+        manufacturerId,
+        productTitle,
+        productImageUrl,
+        quantity: safeQuantity,
+        customerName,
+        configDividers,
+      });
+    } catch (err) {
+      console.error("[exportRequest] Excel export failed:", err);
+      window.alert("Excel export failed: " + (err?.message || String(err)));
+    }
   },
 }));
 

@@ -674,6 +674,36 @@
   animation: pcon-spin 0.8s linear infinite;
 }
 
+/* İki buton yan yana (dealer modu) */
+.pcon-cart__btn-group {
+  display: flex;
+  gap: 8px;
+}
+
+.pcon-cart__btn-group .pcon-cart__btn {
+  flex: 1 1 0%;
+  min-width: 0;
+  font-size: 12px;
+  padding: 10px 10px;
+  letter-spacing: 0.3px;
+}
+
+/* Secondary (outline) buton — "Add to Request" */
+.pcon-cart__btn--secondary {
+  background: #fff;
+  color: #1a1a1a;
+  border-color: #1a1a1a;
+}
+
+.pcon-cart__btn--secondary:hover:not(:disabled) {
+  background: #f5f5f5;
+}
+
+.pcon-cart__btn--secondary .pcon-cart__btn-spinner {
+  border-color: rgba(26, 26, 26, 0.25);
+  border-top-color: #1a1a1a;
+}
+
 .pcon-cart__error {
   font-size: 12px;
   line-height: 1.4;

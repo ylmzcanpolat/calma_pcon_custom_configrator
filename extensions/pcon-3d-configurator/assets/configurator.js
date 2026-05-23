@@ -19,6 +19,9 @@
     successAction: root.dataset.successAction || "drawer-event",
     customerLoggedIn: root.dataset.customerLoggedIn === "true",
     discountPercentage: parseFloat(root.dataset.discountPercentage) || null,
+    productTitle: root.dataset.productTitle || "",
+    productImageUrl: root.dataset.productImage || "",
+    customerName: root.dataset.customerName || "",
   };
 
   if (!config.articleNumber) {

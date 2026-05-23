@@ -1,15 +1,22 @@
 import useConfiguratorStore from "../store/configurator-store.js";
 
-/** Tutarı verilen currency ile formatlar; hata durumunda düz metin döner. */
-function formatCurrency(amount, currency) {
+/**
+ * Tutarı verilen currency ile formatlar; hata durumunda düz metin döner.
+ * noDecimals=true olduğunda küsürat gösterilmez (tam sayı gösterimi).
+ */
+function formatCurrency(amount, currency, noDecimals = false) {
+  const fractionDigits = noDecimals ? 0 : 2;
   try {
     return new Intl.NumberFormat(undefined, {
       style: "currency",
       currency: currency || "EUR",
-      minimumFractionDigits: 2,
+      minimumFractionDigits: fractionDigits,
+      maximumFractionDigits: fractionDigits,
     }).format(amount);
   } catch {
-    return `${Number(amount).toFixed(2)} ${currency || "EUR"}`;
+    return noDecimals
+      ? `${Math.ceil(Number(amount))} ${currency || "EUR"}`
+      : `${Number(amount).toFixed(2)} ${currency || "EUR"}`;
   }
 }
 
@@ -46,9 +53,12 @@ export default function PriceDisplay() {
   let netPrice = null;
 
   if (hasDiscount) {
-    // Discount tutarı: list price × oran, kuruş hassasiyetiyle yukarı yuvarla
-    discountAmount = Math.ceil(price * (discountPercentage / 100) * 100) / 100;
-    netPrice = price - discountAmount;
+    // Discount tutarı: list price × oran → aşağı yuvarla (Math.floor)
+    // Net Price: list price - ham oran → yukarı yuvarla (Math.ceil)
+    // Her biri ham fiyat üzerinden bağımsız hesaplanır; yuvarlama hatası birikmez.
+    const rawDiscount = price * (discountPercentage / 100);
+    discountAmount = Math.floor(rawDiscount);
+    netPrice = Math.ceil(price - rawDiscount);
   }
 
   return (
@@ -65,14 +75,14 @@ export default function PriceDisplay() {
               Discount ({discountPercentage}%)
             </span>
             <span className="pcon-price__value pcon-price__value--discount">
-              {formatCurrency(discountAmount, currency)}
+              {formatCurrency(discountAmount, currency, true)}
             </span>
           </div>
 
           <div className="pcon-price pcon-price--net">
             <span className="pcon-price__label">Net Price</span>
             <span className="pcon-price__value pcon-price__value--net">
-              {formatCurrency(netPrice, currency)}
+              {formatCurrency(netPrice, currency, true)}
             </span>
           </div>
         </>

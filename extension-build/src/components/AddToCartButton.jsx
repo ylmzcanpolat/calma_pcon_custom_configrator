@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import PropTypes from "prop-types";
 import useConfiguratorStore from "../store/configurator-store.js";
 
@@ -6,14 +6,16 @@ const REDIRECT_AFTER_CART = "/collections/calma-pods";
 
 /**
  * @param {{ isGuest?: boolean }} props
- *   isGuest — true olduğunda buton etiketi "Request a Quote" gösterir.
- *   Her iki durumda da (dealer + guest) sepete başarılı ekleme sonrası
- *   REDIRECT_AFTER_CART adresine yönlendirme yapılır.
+ *   isGuest=false (dealer): "Add to Request" + "Add to Cart" iki buton gösterilir.
+ *     - "Add to Request": fiyatsız Excel indirir, sepete ekleme yapmaz.
+ *     - "Add to Cart": sepete ekler ve REDIRECT_AFTER_CART'a yönlendirir.
+ *   isGuest=true (guest): tek "Request a Quote" butonu — sepete ekler + yönlendirir.
  */
 export default function AddToCartButton({ isGuest = false }) {
   const quantity = useConfiguratorStore((s) => s.quantity);
   const setQuantity = useConfiguratorStore((s) => s.setQuantity);
   const addToCart = useConfiguratorStore((s) => s.addToCart);
+  const exportRequest = useConfiguratorStore((s) => s.exportRequest);
   const resetCartFeedback = useConfiguratorStore((s) => s.resetCartFeedback);
   const cartLoading = useConfiguratorStore((s) => s.cartLoading);
   const cartError = useConfiguratorStore((s) => s.cartError);
@@ -23,6 +25,9 @@ export default function AddToCartButton({ isGuest = false }) {
   const updating = useConfiguratorStore((s) => s.updating);
   const loading = useConfiguratorStore((s) => s.loading);
   const addToCartLabel = useConfiguratorStore((s) => s.addToCartLabel);
+
+  // "Add to Request" için yerel loading state (Excel oluşturma sırasında)
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     if (!cartSuccess) return undefined;
@@ -41,13 +46,24 @@ export default function AddToCartButton({ isGuest = false }) {
     setQuantity(Math.max(1, (parseInt(quantity, 10) || 1) + delta));
   };
 
-  const handleClick = async () => {
+  // "Add to Cart" / "Request a Quote" — sepete ekle + yönlendir
+  const handleAddToCart = async () => {
     if (disabled) return;
-    // "none" → store drawer/redirect tetiklemez; yönlendirmeyi biz yapıyoruz.
     const success = await addToCart("none");
     if (success) {
       const routesRoot = (window.Shopify?.routes?.root || "/").replace(/\/$/, "");
       window.location.href = routesRoot + REDIRECT_AFTER_CART;
+    }
+  };
+
+  // "Add to Request" — fiyatsız Excel indir, cart'a ekleme yok
+  const handleExportRequest = async () => {
+    if (disabled || exporting) return;
+    setExporting(true);
+    try {
+      await exportRequest();
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -90,24 +106,62 @@ export default function AddToCartButton({ isGuest = false }) {
         </div>
       </div>
 
-      <button
-        type="button"
-        className="pcon-cart__btn"
-        onClick={handleClick}
-        disabled={disabled}
-        aria-busy={cartLoading}
-      >
-        {cartLoading ? (
-          <>
-            <span className="pcon-cart__btn-spinner" aria-hidden="true" />
-            <span>Adding...</span>
-          </>
-        ) : isGuest ? (
-          "Request a Quote"
-        ) : (
-          addToCartLabel || "Add to Cart"
-        )}
-      </button>
+      {/* Dealer: iki buton yan yana */}
+      {!isGuest ? (
+        <div className="pcon-cart__btn-group">
+          <button
+            type="button"
+            className="pcon-cart__btn pcon-cart__btn--secondary"
+            onClick={handleExportRequest}
+            disabled={disabled || exporting}
+            aria-busy={exporting}
+          >
+            {exporting ? (
+              <>
+                <span className="pcon-cart__btn-spinner" aria-hidden="true" />
+                <span>Exporting...</span>
+              </>
+            ) : (
+              "Export to Excel"
+            )}
+          </button>
+
+          <button
+            type="button"
+            className="pcon-cart__btn"
+            onClick={handleAddToCart}
+            disabled={disabled}
+            aria-busy={cartLoading}
+          >
+            {cartLoading ? (
+              <>
+                <span className="pcon-cart__btn-spinner" aria-hidden="true" />
+                <span>Adding...</span>
+              </>
+            ) : (
+              addToCartLabel || "Add to Cart"
+            )}
+          </button>
+        </div>
+      ) : (
+        /* Guest: tek "Request a Quote" butonu */
+        <button
+          type="button"
+          className="pcon-cart__btn"
+          onClick={handleAddToCart}
+          disabled={disabled}
+          aria-busy={cartLoading}
+        >
+          {cartLoading ? (
+            <>
+              <span className="pcon-cart__btn-spinner" aria-hidden="true" />
+              <span>Adding...</span>
+            </>
+          ) : (
+            "Request a Quote"
+          )}
+        </button>
+      )}
 
       {cartError ? (
         <div className="pcon-cart__error" role="alert">
