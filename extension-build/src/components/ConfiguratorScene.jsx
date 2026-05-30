@@ -584,9 +584,14 @@ export default function ConfiguratorScene({ canvasHeight, customerLoggedIn }) {
           />
         </div>
 
-        {/* Sidebar — loading/error sırasında gizli */}
+        {/* Sidebar — viewer spinner'ından bağımsız olarak hemen görünür.
+              Her bileşen kendi yükleme/boş durumunu yönetir:
+                PropertySelector → properties boşken null döner
+                PriceDisplay    → price null iken skeleton gösterir
+                AddToCartButton → cartProperties/variantId hazır değilse disabled
+              Yalnızca hata durumunda gizlenir (viewer'daki error overlay yeterli). */}
         <div className="pcon-sidebar">
-          {!loading && !error && (
+          {!error && (
             <>
               <PropertySelector />
               {/* PriceDisplay sadece login olmuş kullanıcılara gösterilir */}
