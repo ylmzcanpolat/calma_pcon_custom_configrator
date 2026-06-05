@@ -64,4 +64,4 @@ EXPOSE 3000
 # Container açılışında: cache alt dizinleri hazırla, prisma migrate'i
 # uygula, sonra react-router-serve'ü başlat. `npm run docker-start`
 # zaten `npm run setup && npm run start` zincirini çalıştırıyor.
-CMD ["sh", "-c", "mkdir -p /app/.cache/db /app/.cache/gltf /app/.cache/icons && npm run docker-start"]
+CMD ["sh", "-c", "mkdir -p /app/.cache/db /app/.cache/icons && npm run docker-start"]

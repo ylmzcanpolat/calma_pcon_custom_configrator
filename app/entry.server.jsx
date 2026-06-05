@@ -4,15 +4,6 @@ import { ServerRouter } from "react-router";
 import { createReadableStreamFromReadable } from "@react-router/node";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
-import { startCacheScheduler } from "./services/cache-scheduler.server";
-import { isCacheWarmingEnabled } from "./services/cache-warming-config.server";
-
-// Multi-instance deployment'larda yalnızca bir replica'da cron çalışmalı.
-// RUN_SCHEDULER=0 → cron zamanlayıcı hiç başlamaz.
-// CACHE_WARMING_ENABLED≠1 → warming kodu devre dışı (cron + CLI + init sonrası).
-if (process.env.RUN_SCHEDULER !== "0" && isCacheWarmingEnabled()) {
-  startCacheScheduler();
-}
 
 export const streamTimeout = 5000;
 

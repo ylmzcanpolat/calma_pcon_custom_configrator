@@ -4,7 +4,6 @@ import { InsertInfo } from "@easterngraphics/wcf/modules/eaiws/basket/index.js";
 import { mapProperties } from "./property-mapper.server.js";
 import { buildCartProperties } from "./cart-builder.server.js";
 import { GetChoiceListOptions } from "@easterngraphics/wcf/modules/eaiws/basket";
-import { buildTextureDescriptor } from "./texture-cache.server.js";
 import { buildSubArticleSnapshot } from "./gltf-enricher.server.js";
 import { sessionPool } from "./pcon-session-pool.server.js";
 
@@ -443,7 +442,6 @@ class PconClient {
       }
 
       const patches = [];
-      const textureSources = [];
 
       for (const id of dirtyPropertyIds) {
         const choice = choiceMap.get(id);
@@ -455,24 +453,8 @@ class PconClient {
         }
 
         const currentValue = prop.value?.value ?? null;
-        const option = (choice.values || []).find(
-          (v) => v.value === currentValue,
-        );
-
-        let baseColorTextureUrl = null;
+        const baseColorTextureUrl = null;
         const baseColorFactor = null;
-        let descriptor = null;
-        if (option && option.image) {
-          descriptor = buildTextureDescriptor(option.image);
-          if (descriptor) {
-            baseColorTextureUrl = descriptor.proxyUrl;
-            textureSources.push({
-              hash: descriptor.hash,
-              sourceUrl: descriptor.sourceUrl,
-              ext: descriptor.ext,
-            });
-          }
-        }
 
         // Faz 4 — `targetSelectors` enrichment.
         //
@@ -539,7 +521,6 @@ class PconClient {
         currency,
         properties,
         cartProperties,
-        _textureSources: textureSources,
       };
     });
   }

@@ -14,18 +14,8 @@ kill_timeout = "30s"
   PORT = "3000"
   # Persistent volume içindeki SQLite DB (volume `/app/.cache`'e mount).
   DATABASE_URL = "file:/app/.cache/db/prod.sqlite"
-  # Single instance kullanırken scheduler default açık.
-  # RUN_SCHEDULER=0 → node-cron hiç başlamaz.
-  # CACHE_WARMING_ENABLED=1 → cron + init sonrası background + npm run warm-cache aktif (varsayılan kapalı).
-  RUN_SCHEDULER = "1"
-  CACHE_WARMING_ENABLED = "0"
-  # GLTF disk cache hard cap (MB). Volume büyüklüğünden küçük tutulmalı.
-  GLTF_CACHE_MAX_SIZE_MB = "5000"
   PCON_EAIWS_URL = "https://eaiws.pcon-solutions.com"
   PCON_LOCALE = "en_US"
-  CACHE_WARM_CRON = "0 3,15 * * *"
-  CACHE_WARM_CONCURRENCY = "2"
-  RATE_LIMIT_PER_MINUTE = "30"
 
 # Aşağıdaki secret'lar `fly secrets set` ile yüklenir, dosyaya YAZMA:
 #   SHOPIFY_API_KEY
@@ -33,7 +23,6 @@ kill_timeout = "30s"
 #   SCOPES
 #   SHOPIFY_APP_URL
 #   PCON_GATEKEEPER_ID
-#   REDIS_URL
 
 [http_service]
   internal_port = 3000
@@ -45,8 +34,8 @@ kill_timeout = "30s"
 
   [http_service.concurrency]
     type = "requests"
-    soft_limit = 200
-    hard_limit = 250
+    soft_limit = 15
+    hard_limit = 20
 
 # pcon_cache volume zaten oluşturuldu (vol_4583kmw6ln27nyx4, 10GB, fra).
 [[mounts]]
@@ -55,10 +44,8 @@ kill_timeout = "30s"
   initial_size = "10gb"
 
 [[vm]]
-  size = "performance-1x"
-  memory = "8gb"
-  cpu_kind = "performance"
-  cpus = 1
+  size = "shared-cpu-2x"
+  memory = "2gb"
 
 [checks.http_alive]
   type = "http"
