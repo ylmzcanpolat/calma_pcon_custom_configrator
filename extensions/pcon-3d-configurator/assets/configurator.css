@@ -795,3 +795,155 @@
     aspect-ratio: 1 / 1;
   }
 }
+
+/* ========================================
+   Responsive: Tablet — vertical layout + fixed sticky add-to-cart bar
+   ======================================== */
+@media (min-width: 426px) and (max-width: 1024px) {
+  /* Dikey layout — her iki panel için yeterli genişlik sağlar */
+  .pcon-configurator {
+    flex-direction: column;
+    aspect-ratio: auto;
+  }
+
+  .pcon-viewer {
+    aspect-ratio: 4 / 3;
+    width: 100%;
+  }
+
+  .pcon-sidebar {
+    flex: none;
+    overflow-y: visible;
+    border-left: none;
+    border-top: 1px solid #eee;
+    padding: 16px;
+    /* Fixed sticky bar yüksekliği ~140-160px; güvenlik payıyla 180px boşluk */
+    padding-bottom: 180px;
+  }
+
+  /* ── Viewport altına sabitlenmiş kompakt sepete ekle çubuğu ───────────
+     Dikey düzen: üstte fiyat bilgisi (tam genişlik),
+                  altta adet + buton(lar) yan yana (yatay satır).
+     Hedef yükseklik ≈ 140–160px.
+     ─────────────────────────────────────────────────────────────────── */
+  .pcon-price-cart {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    background: #fff;
+    box-shadow: 0 -2px 16px rgba(0, 0, 0, 0.10);
+    border-top: 1px solid #e5e5e5;
+    /* Dikey kolon: fiyat bloğu üstte, sepet satırı altta */
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 20px;
+    /* iPad home indicator (alt çubuk) alanını aşmamak için */
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* ── Fiyat bloğu: tam genişlik, üstte ── */
+  .pcon-price-cart .pcon-price-block,
+  .pcon-price-cart .pcon-price--pending {
+    width: 100%;
+  }
+
+  /* Her fiyat satırı: padding'ler sıkıştırılmış */
+  .pcon-price-cart .pcon-price {
+    padding: 2px 0;
+    gap: 6px;
+  }
+
+  .pcon-price-cart .pcon-price--discount {
+    padding-top: 1px;
+    padding-bottom: 1px;
+  }
+
+  .pcon-price-cart .pcon-price--net {
+    padding-top: 1px;
+    padding-bottom: 1px;
+    margin-top: 2px;
+  }
+
+  /* Bekleme göstergesi (pricing procedure yüklenirken) */
+  .pcon-price-cart .pcon-price__skeleton {
+    width: 80px;
+    height: 20px;
+  }
+
+  /* ── Sepet satırı: tam genişlik, yatay — adet + buton(lar) yan yana ── */
+  .pcon-price-cart .pcon-cart {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap; /* hata/başarı mesajı ikinci satıra geçer */
+    padding: 0;
+    gap: 8px;
+    background: transparent;
+  }
+
+  /* "Quantity" etiket metni gizlenir — stepper UI kendi kendini anlatır */
+  .pcon-price-cart .pcon-cart__qty-label {
+    display: none;
+  }
+
+  /* Adet satırı: sola yaslanmış */
+  .pcon-price-cart .pcon-cart__row {
+    justify-content: flex-start;
+    gap: 0;
+    flex-shrink: 0;
+  }
+
+  /* Kompakt adet stepper'ı */
+  .pcon-price-cart .pcon-cart__qty-step {
+    width: 32px;
+    height: 38px;
+    font-size: 16px;
+  }
+
+  .pcon-price-cart .pcon-cart__qty-input {
+    width: 44px;
+    height: 38px;
+    font-size: 14px;
+  }
+
+  /* Buton(lar): kalan genişliği doldur */
+  .pcon-price-cart .pcon-cart__btn {
+    flex: 1 1 auto;
+    min-height: 42px;
+    padding: 10px 16px;
+    font-size: 13px;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+  }
+
+  /* Dealer modunda yan yana iki buton: grubu da kalan alanı doldursun */
+  .pcon-price-cart .pcon-cart__btn-group {
+    flex: 1 1 auto;
+    gap: 8px;
+  }
+
+  .pcon-price-cart .pcon-cart__btn-group .pcon-cart__btn {
+    flex: 1 1 0%;
+    font-size: 12px;
+    padding: 10px 12px;
+  }
+
+  /* Hata/başarı mesajları tam genişlikte, bir alt satırda */
+  .pcon-price-cart .pcon-cart__error,
+  .pcon-price-cart .pcon-cart__success {
+    width: 100%;
+    font-size: 11px;
+    padding: 6px 8px;
+  }
+
+  .pcon-skeleton {
+    flex-direction: column;
+  }
+
+  .pcon-skeleton__viewer {
+    aspect-ratio: 4 / 3;
+  }
+}
