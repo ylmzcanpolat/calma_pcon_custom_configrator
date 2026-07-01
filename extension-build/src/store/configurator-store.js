@@ -155,7 +155,11 @@ async function mapWcfProperties(rawProps) {
       options: choices.map((c) => ({
         value: c.value,
         label: c.text,
-        icon: c.largeIcon || c.smallIcon || null,
+        // Swatch UI'da ~40–96px gösterildiği için önce küçük ikonu tercih
+        // ediyoruz; largeIcon (bazen ~1MB) yalnızca smallIcon yoksa fallback.
+        // İkonlar WCF choiceList'inden her oturumda taze geldiği için pCon
+        // tarafındaki değişiklikler kullanıcıya anında yansımaya devam eder.
+        icon: c.smallIcon || c.largeIcon || null,
         available: c.selectable !== false,
       })),
     };

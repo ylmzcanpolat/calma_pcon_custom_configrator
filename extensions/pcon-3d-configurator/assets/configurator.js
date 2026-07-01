@@ -44,15 +44,30 @@
   }
 
   function loadConfigurator() {
-    var bust = "t=" + Date.now();
     var cdnUrl = root.dataset.bundleUrl || "";
     var proxyUrl = config.proxyBase + "/assets/configurator-app.js";
 
+    // Shopify'ın asset_url'i zaten deploy başına versiyonludur (theme app
+    // extension'da versiyon, CDN path segment'inde bulunur:
+    // .../nurus-3d-configurator-prod-99/assets/...). Bu yüzden manuel bir
+    // cache-buster GEREKMEZ; her yüklemede benzersiz URL üretmek tarayıcı
+    // cache'ini tamamen devre dışı bırakır ve ağır bundle'ı defalarca
+    // indirtir. Yeni bir deploy path segment'ini (versiyonu) değiştirdiği
+    // için kullanıcı otomatik olarak güncel bundle'ı alır.
+    //
+    // Proxy fallback'in (yerleşik versiyonu yok) da deploy'da tazelenmesi
+    // için versiyonu CDN URL'inden türetip query olarak ekliyoruz: aynı
+    // deploy içinde tarayıcı cache'i çalışır, yeni deploy'da bust olur.
+    var version = extractAssetVersion(cdnUrl);
+    var proxyVersioned = version
+      ? proxyUrl + "?v=" + encodeURIComponent(version)
+      : proxyUrl;
+
     var urls = [];
     if (cdnUrl) {
-      urls.push(cdnUrl + (cdnUrl.indexOf("?") !== -1 ? "&" : "?") + bust);
+      urls.push(cdnUrl);
     }
-    urls.push(proxyUrl + "?" + bust);
+    urls.push(proxyVersioned);
 
     var runtimeErr = null;
     window.addEventListener("error", function (evt) {
@@ -88,6 +103,18 @@
       };
       document.head.appendChild(s);
     }
+  }
+
+  // Deploy başına stabil bir versiyon token'ı çıkarır. Öncelik ?v= param'ı
+  // (klasik theme asset_url stili); yoksa theme app extension path'indeki
+  // /assets/'ten önceki segment (örn. "nurus-3d-configurator-prod-99").
+  function extractAssetVersion(url) {
+    if (!url) return "";
+    var q = url.match(/[?&]v=([^&]+)/);
+    if (q) return q[1];
+    var seg = url.match(/\/([^/]+)\/assets\//);
+    if (seg) return seg[1];
+    return "";
   }
 
   function showError(msg) {
