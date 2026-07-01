@@ -21,6 +21,7 @@
     discountPercentage: parseFloat(root.dataset.discountPercentage) || null,
     productTitle: root.dataset.productTitle || "",
     productImageUrl: root.dataset.productImage || "",
+    productSku: root.dataset.productSku || "",
     customerName: root.dataset.customerName || "",
   };
 

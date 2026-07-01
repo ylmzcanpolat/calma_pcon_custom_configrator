@@ -11,15 +11,32 @@ const REDIRECT_AFTER_CART = "/collections/calma-pods";
  *     - "Add to Cart": sepete ekler ve REDIRECT_AFTER_CART'a yönlendirir.
  *   isGuest=true (guest): tek "Request a Quote" butonu — sepete ekler + yönlendirir.
  */
+/**
+ * window.CalmaQuoteList.addItem mevcut mu kontrol eder.
+ * Bayi (dealer) girişi yapıldığında mağaza scripti bu global'i yükler.
+ */
+function isQuoteApiReady() {
+  return (
+    typeof window !== "undefined" &&
+    window.CalmaQuoteList &&
+    typeof window.CalmaQuoteList.addItem === "function"
+  );
+}
+
 export default function AddToCartButton({ isGuest = false }) {
   const quantity = useConfiguratorStore((s) => s.quantity);
   const setQuantity = useConfiguratorStore((s) => s.setQuantity);
   const addToCart = useConfiguratorStore((s) => s.addToCart);
+  const addToQuoteList = useConfiguratorStore((s) => s.addToQuoteList);
   const exportRequest = useConfiguratorStore((s) => s.exportRequest);
   const resetCartFeedback = useConfiguratorStore((s) => s.resetCartFeedback);
+  const resetQuoteFeedback = useConfiguratorStore((s) => s.resetQuoteFeedback);
   const cartLoading = useConfiguratorStore((s) => s.cartLoading);
   const cartError = useConfiguratorStore((s) => s.cartError);
   const cartSuccess = useConfiguratorStore((s) => s.cartSuccess);
+  const quoteLoading = useConfiguratorStore((s) => s.quoteLoading);
+  const quoteError = useConfiguratorStore((s) => s.quoteError);
+  const quoteSuccess = useConfiguratorStore((s) => s.quoteSuccess);
   const cartProperties = useConfiguratorStore((s) => s.cartProperties);
   const variantId = useConfiguratorStore((s) => s.variantId);
   const updating = useConfiguratorStore((s) => s.updating);
@@ -29,11 +46,37 @@ export default function AddToCartButton({ isGuest = false }) {
   // "Add to Request" için yerel loading state (Excel oluşturma sırasında)
   const [exporting, setExporting] = useState(false);
 
+  // Teklif listesi API'si yüklü mü? Mağaza scripti bayi girişinde async
+  // yüklenebileceği için mount'ta birkaç kez yoklarız.
+  const [quoteApiAvailable, setQuoteApiAvailable] = useState(isQuoteApiReady);
+
+  useEffect(() => {
+    if (quoteApiAvailable) return undefined;
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts += 1;
+      if (isQuoteApiReady()) {
+        setQuoteApiAvailable(true);
+        clearInterval(interval);
+      } else if (attempts >= 20) {
+        // ~10s sonra vazgeç — kullanıcı muhtemelen bayi değil
+        clearInterval(interval);
+      }
+    }, 500);
+    return () => clearInterval(interval);
+  }, [quoteApiAvailable]);
+
   useEffect(() => {
     if (!cartSuccess) return undefined;
     const timer = setTimeout(() => resetCartFeedback(), 4000);
     return () => clearTimeout(timer);
   }, [cartSuccess, resetCartFeedback]);
+
+  useEffect(() => {
+    if (!quoteSuccess) return undefined;
+    const timer = setTimeout(() => resetQuoteFeedback(), 4000);
+    return () => clearTimeout(timer);
+  }, [quoteSuccess, resetQuoteFeedback]);
 
   const disabled =
     cartLoading || updating || loading || !cartProperties || !variantId;
@@ -54,6 +97,13 @@ export default function AddToCartButton({ isGuest = false }) {
       const routesRoot = (window.Shopify?.routes?.root || "/").replace(/\/$/, "");
       window.location.href = routesRoot + REDIRECT_AFTER_CART;
     }
+  };
+
+  // "Teklife Ekle" — ürünü mağazanın teklif listesine ekle (sepete EKLEMEZ).
+  // Listeyi açma/yönlendirme yok; sağ-alt rozet sayacı otomatik güncellenir.
+  const handleAddToQuote = async () => {
+    if (disabled || quoteLoading) return;
+    await addToQuoteList();
   };
 
   // "Add to Request" — fiyatsız Excel indir, cart'a ekleme yok
@@ -126,6 +176,25 @@ export default function AddToCartButton({ isGuest = false }) {
             )}
           </button>
 
+          {quoteApiAvailable ? (
+            <button
+              type="button"
+              className="pcon-cart__btn pcon-cart__btn--secondary"
+              onClick={handleAddToQuote}
+              disabled={disabled || quoteLoading}
+              aria-busy={quoteLoading}
+            >
+              {quoteLoading ? (
+                <>
+                  <span className="pcon-cart__btn-spinner" aria-hidden="true" />
+                  <span>Ekleniyor...</span>
+                </>
+              ) : (
+                "Add to Quote List"
+              )}
+            </button>
+          ) : null}
+
           <button
             type="button"
             className="pcon-cart__btn"
@@ -172,6 +241,18 @@ export default function AddToCartButton({ isGuest = false }) {
       {cartSuccess ? (
         <div className="pcon-cart__success" role="status">
           Added to cart.
+        </div>
+      ) : null}
+
+      {quoteError ? (
+        <div className="pcon-cart__error" role="alert">
+          {quoteError}
+        </div>
+      ) : null}
+
+      {quoteSuccess ? (
+        <div className="pcon-cart__success" role="status">
+          Teklif listesine eklendi.
         </div>
       ) : null}
     </div>

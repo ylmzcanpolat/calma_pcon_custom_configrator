@@ -235,6 +235,172 @@ async function fetchWcfPrice(article) {
   return { price: null, currency: "EUR" };
 }
 
+/**
+ * Shopify cart line item property'lerini (divider yapısı dahil) üretir.
+ *
+ * Bu fonksiyon hem `addToCart` (gerçek /cart/add.js çağrısı) hem de
+ * `addToQuoteList` (window.CalmaQuoteList.addItem) tarafından kullanılır.
+ * Böylece teklif listesine eklenen `properties` objesi, sepete eklenen
+ * obje ile BİREBİR aynı olur — bu, draft order'a dönüşürken
+ * _Configuration_Price / _currency gibi alanların tutarlı kalması için
+ * kritiktir.
+ *
+ * @param {object} args
+ * @param {object[]} args.properties     - store.properties (mapWcfProperties çıktısı)
+ * @param {number|null} args.price       - WCF fiyatı
+ * @param {string} args.currency
+ * @param {string} args.articleNumber
+ * @param {string} args.manufacturerId
+ * @param {number} args.safeQuantity     - normalize edilmiş pozitif tam sayı
+ * @returns {Record<string, string>} Shopify line item properties
+ */
+function buildShopifyProperties({
+  properties,
+  price,
+  currency,
+  articleNumber,
+  manufacturerId,
+  safeQuantity,
+}) {
+  // ── Konfigürasyon bölümü ─────────────────────────────────────────────────
+  // Property'ler önce kategoriye göre gruplandırılır (GENERAL, WALL, TABLE…),
+  // ardından her kategori için TEK bir "divider N" eklenir; o kategoriye ait
+  // tüm property'ler ardı ardına sıralanır.
+  //
+  //   "divider 1": "GENERAL"
+  //   "CALMA":     "CALMA SMALL - 100X110"
+  //   "PLUG":      "UK PLUG"
+  //   "divider 2": "WALL"
+  //   "COLOUR OF INTERIOR FELT": "FLT02 - Light Grey"
+  //   ...
+  //
+  // currentValue ham WCF kodu (örn. "m_100_110"); options listesinden
+  // eşleşen label'ı buluruz (örn. "CALMA SMALL - 100X110").
+
+  // Adım 1 — properties'i kategorilere göre grupla
+  const grouped = new Map(); // category → [{label, selectedLabel}]
+  const configDescParts = [];
+
+  for (const p of properties) {
+    if (p.currentValue == null || p.currentValue === "") continue;
+    const cat = getPropertyCategory(p.id);
+    if (!grouped.has(cat)) grouped.set(cat, []);
+    const selectedOption = (p.options || []).find(
+      (o) => o.value === p.currentValue,
+    );
+    const selectedLabel = selectedOption?.label || String(p.currentValue);
+    grouped.get(cat).push({ label: p.label, selectedLabel });
+    configDescParts.push(selectedLabel);
+  }
+
+  // Adım 1b — UI'dan gizlenen ama sepet payload'ına zorla eklenmesi gereken
+  // property'leri (HIDDEN_CART_FORCED) uygun kategorilerine dahil et.
+  for (const forced of HIDDEN_CART_FORCED) {
+    const cat = getPropertyCategory(forced.id);
+    if (!grouped.has(cat)) grouped.set(cat, []);
+    grouped.get(cat).push({
+      label: forced.propLabel,
+      selectedLabel: forced.displayLabel,
+    });
+    configDescParts.push(forced.displayLabel);
+  }
+
+  // Adım 2 — CATEGORY_ORDER önce, ardından tanımsız kategoriler
+  const orderedCats = [
+    ...CATEGORY_ORDER.filter((c) => grouped.has(c)),
+    ...[...grouped.keys()].filter((c) => !CATEGORY_ORDER.includes(c)),
+  ];
+
+  // Adım 3 — divider çiftlerini oluştur (kategori başına 1 divider)
+  const configDividers = {};
+  let dividerIdx = 1;
+
+  for (const cat of orderedCats) {
+    const items = grouped.get(cat);
+    if (!items || items.length === 0) continue;
+    configDividers[`divider ${dividerIdx}`] = cat;
+    dividerIdx++;
+    for (const { label, selectedLabel } of items) {
+      configDividers[label] = selectedLabel;
+    }
+  }
+
+  // _description / _Configuration: "articleNumber / manufacturerId — cfg1 / cfg2"
+  const descStr = [
+    articleNumber,
+    manufacturerId || null,
+    ...configDescParts.slice(0, 2),
+  ]
+    .filter(Boolean)
+    .join(" / ");
+
+  // ── Shopify cart properties — tam format ─────────────────────────────────
+  // Önce sabit/sistem alanları, ardından konfigürasyon divider çiftleri.
+  // _attachment, _article_image, _obx_url, _reopen_url: backend EAIWS
+  // round-trip gerektirir; şimdilik boş — gerektiğinde entegre edilir.
+  return {
+    _description: descStr,
+    _quantity: String(safeQuantity),
+    _unit: "ST",
+    _Configuration_Price: price != null ? String(price) : "",
+    _currency: currency || "EUR",
+    _vendormat: articleNumber || "",
+    _Configuration: descStr,
+    _cust_field1: "",
+    _cust_field2: "",
+    _cust_field3: "",
+    _cust_field4: "",
+    _cust_field5: "",
+    _ext_quote_id: "",
+    _service: "",
+    _leadtime: "",
+    _ext_quote_item: "",
+    _contract_item: "",
+    _manufactcode: manufacturerId || "",
+    _manufactmat: "",
+    _ext_product_id: articleNumber || "",
+    _matgroup: "",
+    _vendor: "",
+    _contract: "",
+    _priceunit: "1",
+    _attachment: "",
+    _attachment_purpose: "C",
+    _item_type: "R",
+    _parent_id: "",
+    _article_image: "",
+    _eco: "0",
+    _eco_info: "Gross Eco Contribution",
+    _obx_url: "",
+    _oci_plugin: "true",
+    _priceservice: "false",
+    _reopen_url: "",
+    _taxcode: "",
+    _vat: "",
+    _ean: articleNumber || "",
+    _basket_id: "",
+    _seriesid: "",
+    _additional_text: "",
+    _special_model_info: "",
+    // WCF konfigürasyon property'leri — "divider N" + "Label: değer" çiftleri
+    ...configDividers,
+  };
+}
+
+/**
+ * Shopify variant ID'sini saf sayısal forma indirger.
+ * "gid://shopify/ProductVariant/1234567890" → "1234567890"
+ * "1234567890" → "1234567890"
+ *
+ * @param {string|number|null} variantId
+ * @returns {string} sadece sayısal variant id (bulunamazsa "")
+ */
+function toNumericVariantId(variantId) {
+  if (variantId == null) return "";
+  const str = String(variantId);
+  const match = str.match(/(\d+)\s*$/);
+  return match ? match[1] : "";
+}
+
 // ─── URL sync helpers ──────────────────────────────────────────────────────
 
 function syncCurrentToUrl(properties) {
@@ -263,6 +429,7 @@ const useConfiguratorStore = create((set, get) => ({
   discountPercentage: null,
   productTitle: "",
   productImageUrl: "",
+  productSku: "",
   customerName: "",
 
   // ── UI State ─────────────────────────────────────────────────────────────
@@ -279,6 +446,14 @@ const useConfiguratorStore = create((set, get) => ({
   cartLoading: false,
   cartError: null,
   cartSuccess: false,
+
+  // ── Quote List State (window.CalmaQuoteList — mağaza tarafı API) ──────────
+  // quoteLoading: addItem çağrısı sırasında butonu kilitler
+  // quoteSuccess: kısa "Teklif listesine eklendi" geri bildirimi
+  // quoteError  : API yoksa / hata olursa kullanıcıya gösterilir
+  quoteLoading: false,
+  quoteError: null,
+  quoteSuccess: false,
 
   // ────────────────────────────────────────────────────────────────────────
   // Aksiyon: initialize — App.jsx'ten config alınır, ConfiguratorScene
@@ -299,6 +474,7 @@ const useConfiguratorStore = create((set, get) => ({
       discountPercentage: config.discountPercentage ?? null,
       productTitle: config.productTitle || "",
       productImageUrl: config.productImageUrl || "",
+      productSku: config.productSku || "",
       customerName: config.customerName || "",
       loading: true,
       error: null,
@@ -552,6 +728,104 @@ const useConfiguratorStore = create((set, get) => ({
     set({ cartError: null, cartSuccess: false });
   },
 
+  resetQuoteFeedback() {
+    set({ quoteError: null, quoteSuccess: false });
+  },
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Aksiyon: addToQuoteList — ürünü mağazanın "Teklif Listesi" API'sine ekler.
+  //
+  // window.CalmaQuoteList.addItem(...) çağrılır. Gönderilen `properties` objesi
+  // addToCart() ile BİREBİR aynıdır (buildShopifyProperties) — teklif draft
+  // order'a dönüştüğünde _Configuration_Price / _currency buradan okunur.
+  //
+  // Sepete ekleme YAPILMAZ, yönlendirme YAPILMAZ. Mağazadaki sağ-alt rozet
+  // sayacı kendi kendine güncellenir.
+  // ────────────────────────────────────────────────────────────────────────
+  async addToQuoteList() {
+    const {
+      properties,
+      price,
+      currency,
+      articleNumber,
+      manufacturerId,
+      quantity,
+      variantId,
+      productTitle,
+      productImageUrl,
+      productSku,
+      loading,
+      updating,
+      cartProperties,
+      quoteLoading,
+    } = get();
+
+    if (quoteLoading) return false;
+
+    if (loading || updating) {
+      set({ quoteError: "Configuration is still loading. Please wait." });
+      return false;
+    }
+
+    if (!cartProperties) {
+      set({ quoteError: "Configuration not ready. Please wait." });
+      return false;
+    }
+
+    // API yoksa güvenli davran (bayi değil veya script yüklenmemiş).
+    const api = typeof window !== "undefined" ? window.CalmaQuoteList : null;
+    if (!api || typeof api.addItem !== "function") {
+      set({
+        quoteError:
+          "Quote list is not available. Please make sure you are signed in as a dealer.",
+      });
+      return false;
+    }
+
+    const numericVariantId = toNumericVariantId(variantId);
+    if (!numericVariantId) {
+      set({
+        quoteError:
+          "Could not detect a product variant on this page. Please reload and try again.",
+      });
+      return false;
+    }
+
+    set({ quoteLoading: true, quoteError: null, quoteSuccess: false });
+
+    const safeQuantity = Math.max(1, parseInt(quantity, 10) || 1);
+
+    // addToCart() ile birebir aynı properties objesi
+    const shopifyProperties = buildShopifyProperties({
+      properties,
+      price,
+      currency,
+      articleNumber,
+      manufacturerId,
+      safeQuantity,
+    });
+
+    try {
+      api.addItem({
+        variant_id: numericVariantId,
+        quantity: safeQuantity,
+        properties: shopifyProperties,
+        name: productTitle || articleNumber || null,
+        image: productImageUrl || null,
+        sku: productSku || articleNumber || null,
+      });
+      set({ quoteLoading: false, quoteSuccess: true });
+      return true;
+    } catch (err) {
+      console.error("[Configurator] addToQuoteList error:", err);
+      set({
+        quoteLoading: false,
+        quoteError: err?.message || "Failed to add to quote list.",
+      });
+      return false;
+    }
+  },
+
   /**
    * Cart-add akışı (iki dallı: normal ve preorder).
    *
@@ -600,129 +874,14 @@ const useConfiguratorStore = create((set, get) => ({
 
     const safeQuantity = Math.max(1, parseInt(quantity, 10) || 1);
 
-    // ── Konfigürasyon bölümü ─────────────────────────────────────────────────
-    // Property'ler önce kategoriye göre gruplandırılır (GENERAL, WALL, TABLE…),
-    // ardından her kategori için TEK bir "divider N" eklenir; o kategoriye ait
-    // tüm property'ler ardı ardına sıralanır.
-    //
-    //   "divider 1": "GENERAL"
-    //   "CALMA":     "CALMA SMALL - 100X110"
-    //   "PLUG":      "UK PLUG"
-    //   "divider 2": "WALL"
-    //   "COLOUR OF INTERIOR FELT": "FLT02 - Light Grey"
-    //   ...
-    //
-    // currentValue ham WCF kodu (örn. "m_100_110"); options listesinden
-    // eşleşen label'ı buluruz (örn. "CALMA SMALL - 100X110").
-
-    // Adım 1 — properties'i kategorilere göre grupla
-    const grouped = new Map(); // category → [{label, selectedLabel}]
-    const configDescParts = [];
-
-    for (const p of properties) {
-      if (p.currentValue == null || p.currentValue === "") continue;
-      const cat = getPropertyCategory(p.id);
-      if (!grouped.has(cat)) grouped.set(cat, []);
-      const selectedOption = (p.options || []).find(
-        (o) => o.value === p.currentValue,
-      );
-      const selectedLabel = selectedOption?.label || String(p.currentValue);
-      grouped.get(cat).push({ label: p.label, selectedLabel });
-      configDescParts.push(selectedLabel);
-    }
-
-    // Adım 1b — UI'dan gizlenen ama sepet payload'ına zorla eklenmesi gereken
-    // property'leri (HIDDEN_CART_FORCED) uygun kategorilerine dahil et.
-    for (const forced of HIDDEN_CART_FORCED) {
-      const cat = getPropertyCategory(forced.id);
-      if (!grouped.has(cat)) grouped.set(cat, []);
-      grouped.get(cat).push({
-        label: forced.propLabel,
-        selectedLabel: forced.displayLabel,
-      });
-      configDescParts.push(forced.displayLabel);
-    }
-
-    // Adım 2 — CATEGORY_ORDER önce, ardından tanımsız kategoriler
-    const orderedCats = [
-      ...CATEGORY_ORDER.filter((c) => grouped.has(c)),
-      ...[...grouped.keys()].filter((c) => !CATEGORY_ORDER.includes(c)),
-    ];
-
-    // Adım 3 — divider çiftlerini oluştur (kategori başına 1 divider)
-    const configDividers = {};
-    let dividerIdx = 1;
-
-    for (const cat of orderedCats) {
-      const items = grouped.get(cat);
-      if (!items || items.length === 0) continue;
-      configDividers[`divider ${dividerIdx}`] = cat;
-      dividerIdx++;
-      for (const { label, selectedLabel } of items) {
-        configDividers[label] = selectedLabel;
-      }
-    }
-
-    // _description / _Configuration: "articleNumber / manufacturerId — cfg1 / cfg2"
-    const descStr = [
+    const shopifyProperties = buildShopifyProperties({
+      properties,
+      price,
+      currency,
       articleNumber,
-      manufacturerId || null,
-      ...configDescParts.slice(0, 2),
-    ]
-      .filter(Boolean)
-      .join(" / ");
-
-    // ── Shopify cart properties — tam format ─────────────────────────────────
-    // Önce sabit/sistem alanları, ardından konfigürasyon divider çiftleri.
-    // _attachment, _article_image, _obx_url, _reopen_url: backend EAIWS
-    // round-trip gerektirir; şimdilik boş — gerektiğinde entegre edilir.
-    const shopifyProperties = {
-      _description: descStr,
-      _quantity: String(safeQuantity),
-      _unit: "ST",
-      _Configuration_Price:
-        price != null ? String(price) : "",
-      _currency: currency || "EUR",
-      _vendormat: articleNumber || "",
-      _Configuration: descStr,
-      _cust_field1: "",
-      _cust_field2: "",
-      _cust_field3: "",
-      _cust_field4: "",
-      _cust_field5: "",
-      _ext_quote_id: "",
-      _service: "",
-      _leadtime: "",
-      _ext_quote_item: "",
-      _contract_item: "",
-      _manufactcode: manufacturerId || "",
-      _manufactmat: "",
-      _ext_product_id: articleNumber || "",
-      _matgroup: "",
-      _vendor: "",
-      _contract: "",
-      _priceunit: "1",
-      _attachment: "",
-      _attachment_purpose: "C",
-      _item_type: "R",
-      _parent_id: "",
-      _article_image: "",
-      _eco: "0",
-      _eco_info: "Gross Eco Contribution",
-      _obx_url: "",
-      _oci_plugin: "true",
-      _priceservice: "false",
-      _reopen_url: "",
-      _taxcode: "",
-      _vat: "",
-      _ean: articleNumber || "",
-      _basket_id: "",
-      _seriesid: "",
-      _additional_text: "",
-      _special_model_info: "",
-      // WCF konfigürasyon property'leri — "divider N" + "Label: değer" çiftleri
-      ...configDividers,
-    };
+      manufacturerId,
+      safeQuantity,
+    });
 
     console.log(
       "[cart] Shopify cart/add.js payload:",
