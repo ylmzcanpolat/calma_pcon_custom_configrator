@@ -217,7 +217,7 @@ export default function ConfiguratorScene({ canvasHeight, customerLoggedIn }) {
           preserveDrawingBuffer: true,
           autoResizeViewer: true,
           adaptToDeviceRatio: true,
-          maximumDeviceRatio: 2.0,
+          maximumDeviceRatio: 1.5,
           audioEngine: false,
         });
         wcfAppRef.current = app;

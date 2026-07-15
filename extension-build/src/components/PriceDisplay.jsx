@@ -68,7 +68,7 @@ export default function PriceDisplay() {
         <span className="pcon-price__value">{formatted}</span>
       </div>
 
-      {hasDiscount && (
+      {/* {hasDiscount && (
         <>
           <div className="pcon-price pcon-price--discount">
             <span className="pcon-price__label">
@@ -86,7 +86,7 @@ export default function PriceDisplay() {
             </span>
           </div>
         </>
-      )}
+      )} */}
     </div>
   );
 }

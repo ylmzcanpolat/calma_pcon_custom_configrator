@@ -4,6 +4,8 @@
   "scripts": {
     "build": "npm run build:extension && react-router build",
     "build:extension": "vite build --config extension-build/vite.config.extension.js",
+    "sync:theme": "node extension-build/sync-theme-assets.mjs",
+    "build:theme": "npm run build:extension && npm run sync:theme",
     "dev": "shopify app dev",
     "dev:extension": "vite build --config extension-build/vite.config.extension.js --watch",
     "config:link": "shopify app config link",

@@ -85,6 +85,12 @@
       }
       var s = document.createElement("script");
       s.src = urls[i];
+      // ESM bundle: configurator-app.js artık ES module (code-splitting için).
+      // type="module" ile yüklenir; ConfiguratorScene mount olunca ağır 3D
+      // motoru (pcon-chunk-engine-*.js) import.meta.url'e göre RELATIF olarak
+      // aynı assets klasöründen (CDN veya proxy) dinamik yüklenir.
+      // Module script'ler CORS modunda çekilir (cdn.shopify.com ACAO: * döner).
+      s.type = "module";
       s.async = true;
       s.crossOrigin = "anonymous";
       s.onload = function () {

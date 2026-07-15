@@ -2,14 +2,12 @@ import { useEffect, useState } from "react";
 import PropTypes from "prop-types";
 import useConfiguratorStore from "../store/configurator-store.js";
 
-const REDIRECT_AFTER_CART = "/collections/calma-pods";
-
 /**
  * @param {{ isGuest?: boolean }} props
  *   isGuest=false (dealer): "Add to Request" + "Add to Cart" iki buton gösterilir.
  *     - "Add to Request": fiyatsız Excel indirir, sepete ekleme yapmaz.
- *     - "Add to Cart": sepete ekler ve REDIRECT_AFTER_CART'a yönlendirir.
- *   isGuest=true (guest): tek "Request a Quote" butonu — sepete ekler + yönlendirir.
+ *     - "Add to Cart": sepete ekler, tema'nın cart drawer'ını açar.
+ *   isGuest=true (guest): tek "Request a Quote" butonu — sepete ekler + cart drawer açar.
  */
 /**
  * window.CalmaQuoteList.addItem mevcut mu kontrol eder.
@@ -89,13 +87,17 @@ export default function AddToCartButton({ isGuest = false }) {
     setQuantity(Math.max(1, (parseInt(quantity, 10) || 1) + delta));
   };
 
-  // "Add to Cart" / "Request a Quote" — sepete ekle + yönlendir
+  // "Add to Cart" / "Request a Quote" — sepete ekle, ardından tema cart drawer'ını aç.
+  // Yönlendirme yapılmaz; FoxKit CartDrawer'ın beklediği `cart:refresh` event'i
+  // `{ open: true }` detayıyla dispatch edilir — bu sayede drawer section içeriğini
+  // yenileyip kendini görünür hale getirir.
   const handleAddToCart = async () => {
     if (disabled) return;
     const success = await addToCart("none");
     if (success) {
-      const routesRoot = (window.Shopify?.routes?.root || "/").replace(/\/$/, "");
-      window.location.href = routesRoot + REDIRECT_AFTER_CART;
+      document.dispatchEvent(
+        new CustomEvent("cart:refresh", { bubbles: true, detail: { open: true } }),
+      );
     }
   };
 
@@ -159,7 +161,7 @@ export default function AddToCartButton({ isGuest = false }) {
       {/* Dealer: iki buton yan yana */}
       {!isGuest ? (
         <div className="pcon-cart__btn-group">
-          <button
+          {/* <button
             type="button"
             className="pcon-cart__btn pcon-cart__btn--secondary"
             onClick={handleExportRequest}
@@ -174,7 +176,7 @@ export default function AddToCartButton({ isGuest = false }) {
             ) : (
               "Export to Excel"
             )}
-          </button>
+          </button> */}
 
           {quoteApiAvailable ? (
             <button
