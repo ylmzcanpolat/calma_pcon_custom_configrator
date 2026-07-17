@@ -61,6 +61,7 @@
   data-shop-domain="{{ shop.permanent_domain }}"
   data-proxy-base="/apps/pcon-configurator"
   data-gatekeeper-id="{{ block.settings.pcon_gatekeeper_id }}"
+  data-region="{% if customer %}{% if customer.tags contains 'region_eastern_europe' %}eastern_europe{% elsif customer.tags contains 'region_western_europe' %}western_europe{% elsif customer.tags contains 'region_uk' %}uk{% endif %}{% endif %}"
   data-currency="{{ shop.currency }}"
   data-canvas-height="{{ block.settings.canvas_height }}"
   data-environment-preset="{{ block.settings.environment_preset }}"

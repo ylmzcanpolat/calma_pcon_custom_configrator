@@ -299,7 +299,17 @@ function buildShopifyProperties({
 
   // Adım 1b — UI'dan gizlenen ama sepet payload'ına zorla eklenmesi gereken
   // property'leri (HIDDEN_CART_FORCED) uygun kategorilerine dahil et.
+  //
+  // FALLBACK davranışı: forced kayıt yalnızca AYNI etikete sahip görünür bir
+  // property zaten yoksa eklenir. Aksi halde (örn. görünür "STOOL OPTION" =
+  // NRUS_TABURE seçimi mevcutken) forced sabit değer kullanıcının seçimini
+  // ezerdi — bu, sepette her zaman "NO" görünmesine yol açan hataydı.
+  const existingLabels = new Set();
+  for (const items of grouped.values()) {
+    for (const it of items) existingLabels.add(it.label);
+  }
   for (const forced of HIDDEN_CART_FORCED) {
+    if (existingLabels.has(forced.propLabel)) continue;
     const cat = getPropertyCategory(forced.id);
     if (!grouped.has(cat)) grouped.set(cat, []);
     grouped.get(cat).push({
@@ -421,6 +431,9 @@ const useConfiguratorStore = create((set, get) => ({
   // ── Config (initialize() tarafından set edilir) ──────────────────────────
   proxyBase: "",
   gatekeeperId: "",
+  // Giriş yapmış müşterinin region tag'inden türetilir (Liquid). Boş →
+  // gatekeeper proxy'si UK/default'a düşer.
+  region: "",
   articleNumber: "",
   manufacturerId: "",
   currency: "TRY",
@@ -467,6 +480,7 @@ const useConfiguratorStore = create((set, get) => ({
     set({
       proxyBase: config.proxyBase,
       gatekeeperId: config.gatekeeperId || "",
+      region: config.region || "",
       articleNumber: config.articleNumber,
       manufacturerId: config.manufacturerId,
       currency: config.currency,
@@ -1014,7 +1028,14 @@ const useConfiguratorStore = create((set, get) => ({
       grouped.get(cat).push({ label: p.label, selectedLabel });
     }
 
+    // FALLBACK: aynı etiketli görünür property yoksa forced kayıt eklenir
+    // (buildShopifyProperties ile aynı davranış — kullanıcı seçimini ezmez).
+    const existingLabels = new Set();
+    for (const items of grouped.values()) {
+      for (const it of items) existingLabels.add(it.label);
+    }
     for (const forced of HIDDEN_CART_FORCED) {
+      if (existingLabels.has(forced.propLabel)) continue;
       const cat = getPropertyCategory(forced.id);
       if (!grouped.has(cat)) grouped.set(cat, []);
       grouped.get(cat).push({

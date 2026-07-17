@@ -10,6 +10,7 @@
     shopDomain: root.dataset.shopDomain || "",
     proxyBase: root.dataset.proxyBase || "/apps/pcon-configurator",
     gatekeeperId: root.dataset.gatekeeperId || "",
+    region: root.dataset.region || "",
     currency: root.dataset.currency || "TRY",
     canvasHeight: parseInt(root.dataset.canvasHeight, 10) || 500,
     environmentPreset: root.dataset.environmentPreset || "studio",

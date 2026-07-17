@@ -86,8 +86,10 @@ class WcfErrorBoundary extends Component {
 // Gatekeeper ID, pCon'un uygulama kimliğidir; hassas bir credential
 // değildir ve frontend'e açıkça konulabilir.
 
-async function openGatekeeperSession(proxyBase, locale = "en_US", gatekeeperId = null) {
+async function openGatekeeperSession(proxyBase, locale = "en_US", gatekeeperId = null, region = "") {
   if (gatekeeperId) {
+    // Açık override: block ayarında sabit bir gatekeeper ID verildiğinde
+    // doğrudan çağrılır; region bazlı seçim uygulanmaz.
     const res = await fetch(
       `https://gatekeeper.eaiws.pcon-solutions.com/v3/session/${gatekeeperId}`,
       {
@@ -102,10 +104,11 @@ async function openGatekeeperSession(proxyBase, locale = "en_US", gatekeeperId =
     return res.json();
   }
 
+  // Proxy yolu: region backend'e gönderilir, gatekeeper ID orada seçilir.
   const res = await fetch(`${proxyBase}/api/gatekeeper-session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ locale }),
+    body: JSON.stringify({ locale, region: region || "" }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -123,6 +126,7 @@ export default function ConfiguratorScene({ canvasHeight, customerLoggedIn }) {
   const error = useConfiguratorStore((s) => s.error);
   const proxyBase = useConfiguratorStore((s) => s.proxyBase);
   const gatekeeperId = useConfiguratorStore((s) => s.gatekeeperId);
+  const region = useConfiguratorStore((s) => s.region);
   const articleNumber = useConfiguratorStore((s) => s.articleNumber);
   const manufacturerId = useConfiguratorStore((s) => s.manufacturerId);
   const setWcfReady = useConfiguratorStore((s) => s.setWcfReady);
@@ -195,8 +199,8 @@ export default function ConfiguratorScene({ canvasHeight, customerLoggedIn }) {
       }
 
       try {
-        // ADIM 1 — Gatekeeper session
-        const gkData = await openGatekeeperSession(proxyBase, "en_US", gatekeeperId || null);
+        // ADIM 1 — Gatekeeper session (region bazlı; proxy yolunda seçilir)
+        const gkData = await openGatekeeperSession(proxyBase, "en_US", gatekeeperId || null, region || "");
         if (cancelled) return;
 
         // ADIM 2 — WCF Application (BabylonJS renderer)
@@ -506,7 +510,7 @@ export default function ConfiguratorScene({ canvasHeight, customerLoggedIn }) {
       cancelled = true;
       cleanupWcf();
     };
-  }, [articleNumber, manufacturerId, proxyBase, gatekeeperId, setWcfReady, setWcfError, cleanupWcf, refreshWcfPrice]);
+  }, [articleNumber, manufacturerId, proxyBase, gatekeeperId, region, setWcfReady, setWcfError, cleanupWcf, refreshWcfPrice]);
 
   // ── Render ──────────────────────────────────────────────────────────────
 
