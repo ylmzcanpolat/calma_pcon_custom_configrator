@@ -258,6 +258,96 @@ async function fetchWcfPrice(article) {
  * @param {number} args.safeQuantity     - normalize edilmiş pozitif tam sayı
  * @returns {Record<string, string>} Shopify line item properties
  */
+/**
+ * Debug log amaçlı: TÜM ham WCF property'lerini (görünür/gizli, editable/
+ * readonly farkı yapmadan) `mapWcfProperties` ile aynı zengin şekle
+ * ({ id, label, type, editable, currentValue, options }) dönüştürür.
+ *
+ * `mapWcfProperties`'ten farkı: orada UI'da gösterilecek property'ler
+ * (visible + editable + choiceList + !HIDDEN_FROM_UI) filtrelenir; burada
+ * filtre YOK — "Full raw properties" logu'nun amacı pCon'dan gelen HER
+ * property'yi görebilmek olduğu için tüm rawProps işlenir. choiceList'i
+ * olmayan property'ler `options: []` ile döner.
+ *
+ * @param {object[]} rawProps - WCF `getProperties()` çıktısı
+ * @returns {Promise<{id:string,label:string,type:string,editable:boolean,currentValue:(string|null),options:object[]}[]>}
+ */
+async function buildRawPropsRichForLog(rawProps) {
+  if (!Array.isArray(rawProps)) return [];
+
+  const choiceResults = await Promise.all(
+    rawProps.map((r) =>
+      r.choiceList && typeof r.getChoices === "function"
+        ? r.getChoices().catch(() => [])
+        : Promise.resolve([]),
+    ),
+  );
+
+  return rawProps.map((raw, i) => {
+    const choices = choiceResults[i] || [];
+    const currentVal = typeof raw.getValue === "function" ? raw.getValue() : null;
+
+    return {
+      id: raw.key,
+      label: raw.name,
+      type: choices.some((c) => c.largeIcon || c.smallIcon) ? "color" : "text",
+      editable: !!raw.editable,
+      currentValue: currentVal?.value ?? null,
+      options: choices.map((c) => ({
+        value: c.value,
+        label: c.text,
+        icon: c.smallIcon || c.largeIcon || null,
+        available: c.selectable !== false,
+      })),
+    };
+  });
+}
+
+/**
+ * WCF ham property listesinden serileştirilebilir bir snapshot üretir.
+ *
+ * pCon tarafındaki TÜM property'leri (UI'da gizli olanlar dahil) `_pcon_full`
+ * içinde Axapta'ya taşımak için kullanılır. `console.table` debug çıktısıyla
+ * aynı alanları içerir; `getValue()` fonksiyon ref'lerini düz değerlere çevirir.
+ *
+ * @param {object[]} rawProps  - WCF `getProperties()` çıktısı
+ * @returns {{key:string,name:string,visible:boolean,editable:boolean,hasChoiceList:boolean,value:(string|null)}[]}
+ */
+function buildRawSnapshot(rawProps) {
+  if (!Array.isArray(rawProps)) return [];
+  return rawProps.map((r) => ({
+    key: r.key,
+    name: r.name,
+    visible: !!r.visible,
+    editable: !!r.editable,
+    hasChoiceList: !!r.choiceList,
+    value:
+      typeof r.getValue === "function" ? (r.getValue()?.value ?? null) : null,
+  }));
+}
+
+/**
+ * Debug log öncesi `options[].icon` alanlarını kırpar. Icon değerleri base64
+ * data URL olabilir (bazen ~1MB/option); tüm property listesinde toplanınca
+ * çok büyük/yavaş bir log string'ine (hatta "Invalid string length" riskine)
+ * yol açabilir — bu yüzden JSON'a basmadan önce uzunluk bilgisiyle değiştirilir.
+ *
+ * @param {{options?: {icon?: unknown}[]}[]} props
+ * @returns {object[]}
+ */
+function truncateIconsForLog(props) {
+  return props.map((p) => ({
+    ...p,
+    options: p.options?.map((o) => ({
+      ...o,
+      icon:
+        typeof o.icon === "string" && o.icon.length > 100
+          ? `[icon omitted, ${o.icon.length} chars]`
+          : o.icon,
+    })),
+  }));
+}
+
 function buildShopifyProperties({
   properties,
   price,
@@ -265,6 +355,8 @@ function buildShopifyProperties({
   articleNumber,
   manufacturerId,
   safeQuantity,
+  rawSnapshot = [],
+  variantId = null,
 }) {
   // ── Konfigürasyon bölümü ─────────────────────────────────────────────────
   // Property'ler önce kategoriye göre gruplandırılır (GENERAL, WALL, TABLE…),
@@ -354,26 +446,26 @@ function buildShopifyProperties({
   // round-trip gerektirir; şimdilik boş — gerektiğinde entegre edilir.
   return {
     _description: descStr,
-    _quantity: String(safeQuantity),
-    _unit: "ST",
+   /*  _quantity: String(safeQuantity), */
+    /* _unit: "ST", */
     _Configuration_Price: price != null ? String(price) : "",
     _currency: currency || "EUR",
     _vendormat: articleNumber || "",
     _Configuration: descStr,
-    _cust_field1: "",
+    /* _cust_field1: "",
     _cust_field2: "",
     _cust_field3: "",
     _cust_field4: "",
-    _cust_field5: "",
-    _ext_quote_id: "",
+    _cust_field5: "", */
+   /*  _ext_quote_id: "",
     _service: "",
     _leadtime: "",
     _ext_quote_item: "",
     _contract_item: "",
     _manufactcode: manufacturerId || "",
-    _manufactmat: "",
+    _manufactmat: "", */
     _ext_product_id: articleNumber || "",
-    _matgroup: "",
+    /* _matgroup: "",
     _vendor: "",
     _contract: "",
     _priceunit: "1",
@@ -389,12 +481,27 @@ function buildShopifyProperties({
     _priceservice: "false",
     _reopen_url: "",
     _taxcode: "",
-    _vat: "",
-    _ean: articleNumber || "",
+    _vat: "", */
+    /* _ean: articleNumber || "",
     _basket_id: "",
     _seriesid: "",
     _additional_text: "",
-    _special_model_info: "",
+    _special_model_info: "", */
+    // ── Tam pCon ham verisi (Axapta entegrasyonu için) ─────────────────────
+    // "_" ile başladığı için tüm dealer/CSR gösterim yüzeylerinden gizlidir
+    // (groupProperties / quoteVisibleProps / dealer-portal hepsi `_`-prefix
+    // filtreler). Yalnızca draft order customAttributes'a taşınır ve "Approve
+    // for Production" anında Axapta'ya JSON olarak gönderilir. Görünür
+    // konfigürasyon (divider/label çiftleri) bundan bağımsız, aynen korunur.
+    _pcon_full: JSON.stringify({
+      articleNumber: articleNumber || "",
+      manufacturerId: manufacturerId || "",
+      price: price != null ? price : null,
+      currency: currency || "EUR",
+      quantity: safeQuantity,
+      variantId: variantId != null ? String(variantId) : "",
+      properties: Array.isArray(rawSnapshot) ? rawSnapshot : [],
+    }),
     // WCF konfigürasyon property'leri — "divider N" + "Label: değer" çiftleri
     ...configDividers,
   };
@@ -454,6 +561,8 @@ const useConfiguratorStore = create((set, get) => ({
   updating: false,
   error: null,
   properties: [],
+  // pCon ham property snapshot'ı (tüm gizli alanlar dahil) — _pcon_full için
+  rawSnapshot: [],
   price: null,
 
   // ── Cart State ────────────────────────────────────────────────────────────
@@ -497,6 +606,7 @@ const useConfiguratorStore = create((set, get) => ({
       loading: true,
       error: null,
       properties: [],
+      rawSnapshot: [],
       price: null,
       cartProperties: null,
     });
@@ -553,6 +663,18 @@ const useConfiguratorStore = create((set, get) => ({
         value: typeof r.getValue === "function" ? r.getValue()?.value : "(n/a)",
       })),
     );
+    // NOT: rawProps elemanlarını (WCF sınıf instance'ları) DOĞRUDAN
+    // JSON.stringify etmiyoruz — `mOwner` gibi alanlar tüm pCon session/
+    // katalog ağacına uzanır ve bu hem "circular structure" hem de
+    // "Invalid string length" (V8 max string boyutu aşımı) hatasına yol
+    // açar. Bunun yerine `mapWcfProperties` ile aynı zengin şekli
+    // (id/label/type/editable/currentValue/options) ama filtresiz üreten
+    // buildRawPropsRichForLog() çıktısını loglarız (bkz. fonksiyon yorumu).
+    const rawPropsRich = await buildRawPropsRichForLog(rawProps).catch(() => []);
+    console.log(
+      "[pCon] Full raw properties (JSON):",
+      JSON.stringify(truncateIconsForLog(rawPropsRich), null, 2),
+    );
     console.groupEnd();
 
     console.group("[pCon] Properties — mapped (store)");
@@ -566,12 +688,16 @@ const useConfiguratorStore = create((set, get) => ({
         optionCount: p.options?.length ?? 0,
       })),
     );
-    console.log("[pCon] Full mapped properties (JSON):", JSON.stringify(properties, null, 2));
+    console.log(
+      "[pCon] Full mapped properties (JSON):",
+      JSON.stringify(truncateIconsForLog(properties), null, 2),
+    );
     console.groupEnd();
     // ─────────────────────────────────────────────────────────────────────────
 
     set({
       properties,
+      rawSnapshot: buildRawSnapshot(rawProps),
       price: priceData.price,
       currency: priceData.currency || get().currency,
       cartProperties: {}, // signal: WCF article hazır → cart butonu açılır
@@ -698,6 +824,7 @@ const useConfiguratorStore = create((set, get) => ({
 
       set({
         properties: updatedProps,
+        rawSnapshot: buildRawSnapshot(rawProps),
         price: priceData.price,
         currency: priceData.currency || get().currency,
         updating: false,
@@ -763,6 +890,7 @@ const useConfiguratorStore = create((set, get) => ({
   async addToQuoteList() {
     const {
       properties,
+      rawSnapshot,
       price,
       currency,
       articleNumber,
@@ -821,6 +949,8 @@ const useConfiguratorStore = create((set, get) => ({
       articleNumber,
       manufacturerId,
       safeQuantity,
+      rawSnapshot,
+      variantId: numericVariantId,
     });
 
     try {
@@ -854,6 +984,7 @@ const useConfiguratorStore = create((set, get) => ({
   async addToCart(successOverride = null) {
     const {
       properties,
+      rawSnapshot,
       price,
       currency,
       articleNumber,
@@ -899,6 +1030,8 @@ const useConfiguratorStore = create((set, get) => ({
       articleNumber,
       manufacturerId,
       safeQuantity,
+      rawSnapshot,
+      variantId: toNumericVariantId(variantId),
     });
 
     console.log(
