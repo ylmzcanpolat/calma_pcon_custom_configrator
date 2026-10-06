@@ -819,8 +819,60 @@ const useConfiguratorStore = create((set, get) => ({
       // propMap'i güncelle — yeni raw ref'lerle
       _wcfPropMap = new Map(rawProps.map((r) => [r.key, r]));
 
+      // ─── pCon / WCF debug log — updateProperty sonrası ────────────────────
+      // Amaç: property değişikliği sonrası pCon'dan (WCF) DÖNEN HAM veriyi,
+      // hiçbir dönüşüme uğratmadan, ekrana basılan (mapped) veriyle
+      // karşılaştırmalı şekilde loglamak. Böylece "ekranda görünen yanlış"
+      // sorunu; pCon'un kendisinin yanlış/değişmemiş veri döndürmesinden mi,
+      // yoksa mapWcfProperties/applyCustomIcons dönüşümünden mi kaynaklanıyor
+      // ayırt edilebilir. setWcfReady'deki ilk yükleme logu ile aynı format.
+      console.group(`[pCon] updateProperty(${key} = ${JSON.stringify(value)}) — pCon'dan gelen ham veri`);
+      console.log("rawProps count:", rawProps.length);
+      console.table(
+        rawProps.map((r) => ({
+          key: r.key,
+          name: r.name,
+          visible: r.visible,
+          editable: r.editable,
+          hasChoiceList: !!r.choiceList,
+          value: typeof r.getValue === "function" ? r.getValue()?.value : "(n/a)",
+        })),
+      );
+      const rawPropsRich = await buildRawPropsRichForLog(rawProps).catch(() => []);
+      console.log(
+        "[pCon] updateProperty — Full raw properties (JSON, değişmemiş pCon verisi):",
+        JSON.stringify(truncateIconsForLog(rawPropsRich), null, 2),
+      );
+      console.log("[pCon] updateProperty — Fiyat (pCon'dan gelen, önceki → yeni):", {
+        previousPrice: get().price,
+        previousCurrency: get().currency,
+        newPrice: priceData.price,
+        newCurrency: priceData.currency,
+      });
+      console.groupEnd();
+      // ─────────────────────────────────────────────────────────────────────────
+
       const mapped = await mapWcfProperties(rawProps);
       const updatedProps = applyCustomIcons(mapped, customIcons);
+
+      // ─── pCon / WCF debug log — ekrana basılacak (mapped) veri ────────────
+      console.group(`[pCon] updateProperty(${key}) — ekrana basılacak mapped veri`);
+      console.log("mapped count:", updatedProps.length);
+      console.table(
+        updatedProps.map((p) => ({
+          id: p.id,
+          label: p.label,
+          type: p.type,
+          currentValue: p.currentValue,
+          optionCount: p.options?.length ?? 0,
+        })),
+      );
+      console.log(
+        "[pCon] updateProperty — Full mapped properties (JSON):",
+        JSON.stringify(truncateIconsForLog(updatedProps), null, 2),
+      );
+      console.groupEnd();
+      // ─────────────────────────────────────────────────────────────────────────
 
       set({
         properties: updatedProps,
