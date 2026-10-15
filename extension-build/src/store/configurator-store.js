@@ -41,6 +41,14 @@ let _wcfArticleManager = null;
  */
 let _wcfPropMap = new Map();
 
+/**
+ * Mevcut konfigürasyon için üretilmiş OBX URL'i (bkz. exportCurrentObxUrl).
+ * Konfigürasyon her değiştiğinde "" yapılır — stale bir OBX'in sepete
+ * yazılması, yanlış konfigürasyonun üretime gitmesi anlamına gelir.
+ * @type {string}
+ */
+let _obxUrlCache = "";
+
 // ─── Cart property category helpers ───────────────────────────────────────
 
 /**
@@ -239,6 +247,78 @@ async function fetchWcfPrice(article) {
   return { price: null, currency: "EUR" };
 }
 
+// ─── OBX export (EAIWS basket.copy) ────────────────────────────────────────
+
+/**
+ * exportObx bir SOAP round-trip'idir; sepete ekleme akışını süresiz bloke
+ * etmemesi için üst sınır. Aşılırsa cart-add OBX olmadan tamamlanır.
+ */
+const OBX_EXPORT_TIMEOUT = 15000;
+
+/**
+ * Konfiguratörde yüklü article'ın GÜNCEL konfigürasyonunu EAIWS üzerinde OBX
+ * olarak dışa aktarır ve dosyanın geçici URL'ini döner, örn.
+ * "https://s3.eaiws.pcon-solutions.com/.../cut_buffer/00000007.obx".
+ *
+ * `ArticleManager.exportObx()` içeride `basket.copy()` SOAP çağrısını yapar;
+ * bu yüzden yalnızca article yüklü (basketId mevcut) iken çalışır ve ağ
+ * gecikmesine tabidir. Davranış kararları:
+ *
+ *   - CACHE: aynı konfigürasyon için tek round-trip. Kullanıcı adet değiştirip
+ *     tekrar "Add to Cart" dediğinde EAIWS'e yeniden gidilmez. Cache
+ *     `setWcfReady` (yeni article) ve `updateProperty` (konfigürasyon değişti)
+ *     tarafından düşürülür.
+ *   - FAIL-SOFT: hata/timeout durumunda "" döner ve sepete ekleme OBX alanı
+ *     boş olarak tamamlanır. OBX, satışı bloke edecek kadar kritik değil;
+ *     throw etmek kullanıcıyı sepetsiz bırakırdı.
+ *
+ * @returns {Promise<string>} OBX URL'i, üretilemediyse ""
+ */
+async function exportCurrentObxUrl() {
+  if (_obxUrlCache) return _obxUrlCache;
+
+  const manager = _wcfArticleManager;
+  const article = _wcfArticle;
+  if (!manager || typeof manager.exportObx !== "function" || !article) {
+    console.warn("[wcf] exportObx skipped — article/manager not ready");
+    return "";
+  }
+
+  // exportObx yalnızca MainArticleElement kabul eder (basketId üzerinden
+  // basket.copy çağrılır); elimizdeki ref bir sub-article ise main'e çıkarız.
+  const mainArticle =
+    typeof article.getMainArticle === "function"
+      ? (article.getMainArticle() ?? article)
+      : article;
+
+  let timeoutId;
+  try {
+    const url = await Promise.race([
+      manager.exportObx([mainArticle]),
+      new Promise((_resolve, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error(`exportObx timed out after ${OBX_EXPORT_TIMEOUT}ms`)),
+          OBX_EXPORT_TIMEOUT,
+        );
+      }),
+    ]);
+
+    if (typeof url !== "string" || !url) {
+      console.warn("[wcf] exportObx returned no url:", url);
+      return "";
+    }
+
+    _obxUrlCache = url;
+    console.log("[wcf] exportObx ok:", url);
+    return url;
+  } catch (err) {
+    console.warn("[wcf] exportObx failed:", err?.message || err);
+    return "";
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 /**
  * Shopify cart line item property'lerini (divider yapısı dahil) üretir.
  *
@@ -256,6 +336,7 @@ async function fetchWcfPrice(article) {
  * @param {string} args.articleNumber
  * @param {string} args.manufacturerId
  * @param {number} args.safeQuantity     - normalize edilmiş pozitif tam sayı
+ * @param {string} [args.obxUrl]         - exportCurrentObxUrl() çıktısı ("" olabilir)
  * @returns {Record<string, string>} Shopify line item properties
  */
 /**
@@ -357,6 +438,7 @@ function buildShopifyProperties({
   safeQuantity,
   rawSnapshot = [],
   variantId = null,
+  obxUrl = "",
 }) {
   // ── Konfigürasyon bölümü ─────────────────────────────────────────────────
   // Property'ler önce kategoriye göre gruplandırılır (GENERAL, WALL, TABLE…),
@@ -465,6 +547,13 @@ function buildShopifyProperties({
     _manufactcode: manufacturerId || "",
     _manufactmat: "", */
     _ext_product_id: articleNumber || "",
+    // EAIWS'in ürettiği OBX dosyasının geçici URL'i — konfigürasyonun tam
+    // (XML) hali. Export başarısızsa boş string gider; alan her zaman payload'da
+    // bulunur ki tüketen taraf key'in varlığına güvenebilsin.
+    // "_" prefix'i zorunlu: Shopify `_`-ile başlayan line item property'lerini
+    // sepet/checkout/e-posta yüzeylerinde göstermez; `_pcon_full` ile aynı
+    // şekilde dealer/CSR gösterim filtrelerinden de gizli kalır.
+    _obxURL: obxUrl || "",
     /* _matgroup: "",
     _vendor: "",
     _contract: "",
@@ -640,6 +729,8 @@ const useConfiguratorStore = create((set, get) => ({
     _wcfArticle = article;
     _wcfArticleManager = articleManager;
     _wcfPropMap = new Map(rawProps.map((r) => [r.key, r]));
+    // Yeni article → önceki session'dan kalan OBX URL'i geçersiz.
+    _obxUrlCache = "";
 
     const priceData = await fetchWcfPrice(article).catch(() => ({
       price: null,
@@ -749,6 +840,11 @@ const useConfiguratorStore = create((set, get) => ({
     }
 
     const { properties, customIcons } = get();
+
+    // Konfigürasyon değişiyor → cache'li OBX URL'i artık eski konfigürasyonu
+    // temsil ediyor. setValue başarısız olup revert edilse bile cache'i
+    // düşürmek güvenli taraftır (en kötü senaryo: bir ekstra export).
+    _obxUrlCache = "";
 
     // Optimistik güncelleme — seçim anında active görünür.
     const optimistic = properties.map((p) =>
@@ -993,6 +1089,11 @@ const useConfiguratorStore = create((set, get) => ({
 
     const safeQuantity = Math.max(1, parseInt(quantity, 10) || 1);
 
+    // addToCart() ile aynı OBX export adımı — teklif listesi de draft order'a
+    // dönüştüğü için `_obxURL` burada da taşınmalı. Aynı konfigürasyon için
+    // cache'lendiğinden, önce sepete eklenmişse ek bir EAIWS round-trip'i olmaz.
+    const obxUrl = await exportCurrentObxUrl();
+
     // addToCart() ile birebir aynı properties objesi
     const shopifyProperties = buildShopifyProperties({
       properties,
@@ -1003,6 +1104,7 @@ const useConfiguratorStore = create((set, get) => ({
       safeQuantity,
       rawSnapshot,
       variantId: numericVariantId,
+      obxUrl,
     });
 
     try {
@@ -1075,6 +1177,12 @@ const useConfiguratorStore = create((set, get) => ({
 
     const safeQuantity = Math.max(1, parseInt(quantity, 10) || 1);
 
+    // OBX export — properties üretilmeden ÖNCE yapılır, çünkü URL payload'ın
+    // bir parçası. `cartLoading` zaten set edildiği için buton spinner'da
+    // bekler; hata/timeout durumunda "" döner ve akış kesilmez
+    // (bkz. exportCurrentObxUrl).
+    const obxUrl = await exportCurrentObxUrl();
+
     const shopifyProperties = buildShopifyProperties({
       properties,
       price,
@@ -1084,6 +1192,7 @@ const useConfiguratorStore = create((set, get) => ({
       safeQuantity,
       rawSnapshot,
       variantId: toNumericVariantId(variantId),
+      obxUrl,
     });
 
     console.log(
