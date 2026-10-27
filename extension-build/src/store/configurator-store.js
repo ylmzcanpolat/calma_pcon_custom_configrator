@@ -20,6 +20,13 @@ import { create } from "zustand";
 import { readUrlProperties, writeUrlProperties } from "../utils/url-sync.js";
 import { postCartAdd, dispatchCartUpdateEvents } from "../utils/cart.js";
 import {
+  BUNDLE_ID_KEY,
+  BUNDLE_ROLE_KEY,
+  buildStoolProperties,
+  createBundleId,
+  resolveStoolLine,
+} from "../utils/stool-bundle.js";
+import {
   getPreorderIntent,
   clearPreorderIntent,
   getCustomerId,
@@ -644,6 +651,8 @@ const useConfiguratorStore = create((set, get) => ({
   productImageUrl: "",
   productSku: "",
   customerName: "",
+  // App bloğunun "Stool product" ayarı: { title, options, variants } | null
+  stool: null,
 
   // ── UI State ─────────────────────────────────────────────────────────────
   loading: false,
@@ -692,6 +701,7 @@ const useConfiguratorStore = create((set, get) => ({
       productImageUrl: config.productImageUrl || "",
       productSku: config.productSku || "",
       customerName: config.customerName || "",
+      stool: config.stool || null,
       loading: true,
       error: null,
       properties: [],
@@ -1151,6 +1161,8 @@ const useConfiguratorStore = create((set, get) => ({
       updating,
       loading,
       cartProperties,
+      stool,
+      productTitle,
     } = get();
 
     if (cartLoading) return false;
@@ -1170,6 +1182,12 @@ const useConfiguratorStore = create((set, get) => ({
         cartError:
           "Could not detect a product variant on this page. Please reload and try again.",
       });
+      return false;
+    }
+
+    const stoolLine = resolveStoolLine({ stool, properties });
+    if (stoolLine?.error) {
+      set({ cartError: stoolLine.error });
       return false;
     }
 
@@ -1195,10 +1213,36 @@ const useConfiguratorStore = create((set, get) => ({
       obxUrl,
     });
 
-    console.log(
-      "[cart] Shopify cart/add.js payload:",
-      JSON.stringify({ items: [{ id: variantId, quantity: safeQuantity, properties: shopifyProperties }] }, null, 2),
-    );
+    const bundleId = stoolLine ? createBundleId() : null;
+    const parentProperties = bundleId
+      ? { ...shopifyProperties, [BUNDLE_ID_KEY]: bundleId, [BUNDLE_ROLE_KEY]: "parent" }
+      : shopifyProperties;
+    const stoolProperties = stoolLine
+      ? buildStoolProperties({
+          stoolLine,
+          includedWith: productTitle || articleNumber,
+          currency,
+          bundleId,
+        })
+      : null;
+
+    const items = [
+      {
+        id: variantId,
+        quantity: safeQuantity,
+        properties: parentProperties,
+      },
+    ];
+    if (stoolLine) {
+      items.push({
+        id: stoolLine.variantId,
+        quantity: safeQuantity,
+        parent_id: Number(toNumericVariantId(variantId)),
+        properties: stoolProperties,
+      });
+    }
+
+    console.log("[cart] Shopify cart/add.js payload:", JSON.stringify({ items }, null, 2));
 
     try {
       const preorderIntent = getPreorderIntent();
@@ -1210,9 +1254,11 @@ const useConfiguratorStore = create((set, get) => ({
           preorderResult = await postPreorderAddLine({
             logged_in_customer_id: customerId,
             draftOrderId: preorderIntent.draftOrderId,
-            variantId,
-            quantity: safeQuantity,
-            properties: shopifyProperties,
+            lines: items.map((item) => ({
+              variantId: item.id,
+              quantity: item.quantity,
+              properties: item.properties,
+            })),
           });
         } catch (err) {
           console.error("[Configurator] Preorder add-line error:", err);
@@ -1243,14 +1289,6 @@ const useConfiguratorStore = create((set, get) => ({
 
       // Normal mod — WCF properties doğrudan Shopify cart/add.js'e gönderilir.
       // Backend EAIWS round-trip yok: tam konfigürasyon zaten WCF state'inde.
-      const items = [
-        {
-          id: variantId,
-          quantity: safeQuantity,
-          properties: shopifyProperties,
-        },
-      ];
-
       const cartPayload = await postCartAdd(routesRoot, items);
       set({ cartLoading: false, cartSuccess: true });
 

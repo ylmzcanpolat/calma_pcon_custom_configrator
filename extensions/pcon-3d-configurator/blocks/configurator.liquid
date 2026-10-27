@@ -78,6 +78,20 @@
   data-customer-name="{% if customer %}{{ customer.name | escape }}{% endif %}"
   style="width: 100%; min-height: {{ block.settings.canvas_height }}px;"
 >
+  {%- assign stool_product = block.settings.stool_product -%}
+  {%- if stool_product != blank -%}
+    <script type="application/json" id="pcon-stool-product">
+      {
+        "title": {{ stool_product.title | json }},
+        "options": {{ stool_product.options | json }},
+        "variants": [
+          {%- for variant in stool_product.variants -%}
+            {"id": {{ variant.id | json }}, "options": {{ variant.options | json }}, "available": {{ variant.available | json }}}{% unless forloop.last %},{% endunless %}
+          {%- endfor -%}
+        ]
+      }
+    </script>
+  {%- endif -%}
   <div class="pcon-skeleton">
     <div class="pcon-skeleton__viewer"></div>
     <div class="pcon-skeleton__sidebar">
@@ -152,6 +166,16 @@
         { "value": "none", "label": "Do nothing" }
       ],
       "default": "drawer-event"
+    },
+    {
+      "type": "header",
+      "content": "Included stool"
+    },
+    {
+      "type": "product",
+      "id": "stool_product",
+      "label": "Stool product",
+      "info": "When STOOL OPTION is YES, the variant matching the interior wall group and colour (Upholstery Material / Upholstery Color) is added to the cart for free, linked to this product."
     }
   ]
 }

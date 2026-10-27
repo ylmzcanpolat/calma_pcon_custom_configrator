@@ -24,6 +24,7 @@
     productImageUrl: root.dataset.productImage || "",
     productSku: root.dataset.productSku || "",
     customerName: root.dataset.customerName || "",
+    stool: readJsonScript("pcon-stool-product"),
   };
 
   if (!config.articleNumber) {
@@ -122,6 +123,17 @@
     var seg = url.match(/\/([^/]+)\/assets\//);
     if (seg) return seg[1];
     return "";
+  }
+
+  function readJsonScript(id) {
+    var el = document.getElementById(id);
+    if (!el) return null;
+    try {
+      return JSON.parse(el.textContent);
+    } catch (e) {
+      console.warn("[pcon] Invalid JSON in #" + id, e);
+      return null;
+    }
   }
 
   function showError(msg) {
