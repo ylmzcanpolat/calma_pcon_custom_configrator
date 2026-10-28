@@ -32,6 +32,15 @@ import {
   getCustomerId,
   postPreorderAddLine,
 } from "../utils/preorder-intent.js";
+import {
+  getQuoteEditIntent,
+  clearQuoteEditIntent,
+  getQuoteEditLine,
+  replaceQuoteEditLine,
+  fetchStoredObx,
+  captureObxUrl,
+  quoteEditReturnUrl,
+} from "../utils/quote-edit-intent.js";
 
 // ─── Module-level WCF state (Zustand dışında — re-render tetiklemez) ─────────
 
@@ -628,6 +637,99 @@ function syncCurrentToUrl(properties) {
   writeUrlProperties(map);
 }
 
+// ─── Quote line restore (Edit Quote → "Edit configuration") ───────────────
+
+/**
+ * Satırın `_pcon_full` JSON'unu güvenli şekilde çözer.
+ * @param {object} props  line item properties
+ * @returns {{articleNumber?: string, properties?: object[]}|null}
+ */
+function parsePconFull(props) {
+  const raw = props && props._pcon_full;
+  if (!raw) return null;
+  try {
+    const obj = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return obj && typeof obj === "object" ? obj : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Saklı .obx dosyasını sahneye yükler ve mevcut article'ın yerine koyar.
+ *
+ * `ArticleManager.importObx` article'ı EAIWS session'ında oluşturur ama
+ * ModelManager'a EKLEMEZ (insertArticle ile aynı sözleşme) — eski article
+ * sahneden çıkarılıp yenisi eklenir, module-level `_wcfArticle` güncellenir.
+ * Bir OBX birden fazla ana article içerebilir; konfigüratör tek ürün
+ * gösterdiği için yalnızca ilki kullanılır.
+ *
+ * ASLA throw etmez: false dönerse çağıran `_pcon_full` fallback'ine geçer.
+ *
+ * @returns {Promise<boolean>}
+ */
+async function importObxIntoScene({ customerId, fileId, url }) {
+  const manager = _wcfArticleManager;
+  if (!manager || typeof manager.importObx !== "function") {
+    console.warn("[quote-edit] importObx unavailable — manager not ready");
+    return false;
+  }
+
+  const blob = await fetchStoredObx({ customerId, fileId, url });
+  if (!blob) {
+    console.warn("[quote-edit] no stored OBX for this line — falling back to properties");
+    return false;
+  }
+
+  let imported;
+  try {
+    imported = await manager.importObx(blob, { importArticlesWithoutPosition: true });
+  } catch (err) {
+    console.warn("[quote-edit] importObx failed:", err?.message || err);
+    return false;
+  }
+
+  const main = Array.isArray(imported) ? imported.find(Boolean) : null;
+  if (!main) {
+    console.warn("[quote-edit] importObx returned no article");
+    return false;
+  }
+
+  const app = manager.app;
+  const previous = _wcfArticle;
+
+  try {
+    app?.model?.addElement(main);
+  } catch (err) {
+    console.warn("[quote-edit] could not add imported article to the scene:", err?.message || err);
+    return false;
+  }
+
+  if (previous && previous !== main) {
+    try {
+      app?.model?.removeElement(previous, true, true);
+    } catch (err) {
+      console.warn("[quote-edit] could not remove previous article:", err?.message || err);
+    }
+  }
+
+  _wcfArticle = main;
+  _obxUrlCache = "";
+
+  // Kamera: ConfiguratorScene'in ilk yüklemedeki ortalamasıyla aynı.
+  try {
+    await main.waitUntilGeometryUpdated?.();
+    const cameraControl = app?.viewer?.view?.cameraControl;
+    cameraControl?.zoomToFitElements?.([main], { margin: 0.15 });
+    app?.viewer?.requestRenderFrame?.();
+  } catch (err) {
+    console.warn("[quote-edit] camera refit after import failed:", err?.message || err);
+  }
+
+  console.log("[quote-edit] configuration restored from stored OBX");
+  return true;
+}
+
 // ─── Store ─────────────────────────────────────────────────────────────────
 
 const useConfiguratorStore = create((set, get) => ({
@@ -679,12 +781,23 @@ const useConfiguratorStore = create((set, get) => ({
   quoteError: null,
   quoteSuccess: false,
 
+  // ── Quote line edit (Edit Quote → "Edit configuration") ──────────────────
+  // quoteEdit: aktif intent ({ quotationId, quoteNumber, lineIndex, lineName,
+  //            returnUrl }) — varsa "Add to Cart" yerine "Update Quote Line".
+  // restoring: satırın konfigürasyonu geri yüklenirken true (buton kilitli).
+  quoteEdit: null,
+  restoring: false,
+
   // ────────────────────────────────────────────────────────────────────────
   // Aksiyon: initialize — App.jsx'ten config alınır, ConfiguratorScene
   // tetiklenir (loading: true seti). Asıl WCF başlatma ConfiguratorScene'de.
   // ────────────────────────────────────────────────────────────────────────
   initialize(config) {
+    // Dealer bir teklif satırını düzenlemek için mi geldi? (kardeş app yazar)
+    const quoteEdit = config.customerLoggedIn === false ? null : getQuoteEditIntent();
     set({
+      quoteEdit,
+      restoring: false,
       proxyBase: config.proxyBase,
       gatekeeperId: config.gatekeeperId || "",
       region: config.region || "",
@@ -808,6 +921,14 @@ const useConfiguratorStore = create((set, get) => ({
     // Not: ConfiguratorScene, setWcfReady bittikten hemen sonra
     // refreshWcfPrice() çağırır. Burada ek retry'a gerek yok.
 
+    // Teklif satırı düzenleme modu: URL override'ları yerine satırın kayıtlı
+    // konfigürasyonu geri yüklenir (saklı OBX → importObx; fallback olarak
+    // `_pcon_full` property değerleri).
+    if (get().quoteEdit) {
+      await get().restoreQuoteEditLine();
+      return;
+    }
+
     // URL'deki property override'larını uygula
     const urlProps = readUrlProperties();
     if (Object.keys(urlProps).length > 0) {
@@ -829,6 +950,165 @@ const useConfiguratorStore = create((set, get) => ({
   // ────────────────────────────────────────────────────────────────────────
   setWcfError(err) {
     set({ error: err?.message || String(err), loading: false });
+  },
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Aksiyon: reloadArticleState — module-level `_wcfArticle`'dan property,
+  // fiyat ve snapshot'ı yeniden okuyup store'u tazeler (importObx sonrası
+  // yeni article için). updateProperty'nin getProperties zinciriyle aynı.
+  // ────────────────────────────────────────────────────────────────────────
+  async reloadArticleState() {
+    if (!_wcfArticle) return;
+    const [rawProps, priceData] = await Promise.all([
+      _wcfArticle.getProperties(),
+      fetchWcfPrice(_wcfArticle).catch(() => ({ price: null, currency: get().currency })),
+    ]);
+    _wcfPropMap = new Map(rawProps.map((r) => [r.key, r]));
+    const mapped = await mapWcfProperties(rawProps).catch(() => []);
+    set({
+      properties: applyCustomIcons(mapped, get().customIcons),
+      rawSnapshot: buildRawSnapshot(rawProps),
+      price: priceData.price,
+      currency: priceData.currency || get().currency,
+    });
+  },
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Aksiyon: applySnapshotProperties — `_pcon_full.properties` snapshot'ındaki
+  // değerleri sırayla uygular (sadece düzenlenebilir choice-list property'ler,
+  // değeri farklı olanlar ve seçenek listesinde hâlâ sunulanlar). Sıralı
+  // çalışır: bir seçim (örn. boyut) diğerlerinin seçenek listesini
+  // değiştirebilir. Hem OBX yoksa fallback hem de OBX sonrası doğrulama.
+  //
+  // @returns {Promise<number>} uygulanan property sayısı
+  // ────────────────────────────────────────────────────────────────────────
+  async applySnapshotProperties(snapshot) {
+    if (!Array.isArray(snapshot) || !snapshot.length) return 0;
+
+    const BIG = 1e9;
+    const orderMap = new Map(PROPERTY_ORDER.map((id, idx) => [id, idx]));
+    const rank = (key) => (orderMap.has(key) ? orderMap.get(key) : BIG);
+    const entries = snapshot
+      .filter((p) => p && p.key && p.value != null && p.value !== "")
+      .sort((a, b) => rank(a.key) - rank(b.key));
+
+    let applied = 0;
+    for (const p of entries) {
+      const raw = _wcfPropMap.get(p.key);
+      if (!raw || raw.editable === false || !raw.choiceList) continue;
+
+      const current = typeof raw.getValue === "function" ? raw.getValue()?.value : null;
+      if (current === p.value) continue;
+
+      try {
+        const choices =
+          typeof raw.getChoices === "function" ? await raw.getChoices() : null;
+        if (Array.isArray(choices) && choices.length && !choices.some((c) => c.value === p.value)) {
+          console.warn(`[quote-edit] value no longer available, skipped: ${p.key} = ${p.value}`);
+          continue;
+        }
+      } catch {
+        /* choice list okunamadı — yine de dene */
+      }
+
+      try {
+        await get().updateProperty(p.key, p.value);
+        applied++;
+      } catch (err) {
+        console.warn(`[quote-edit] could not apply ${p.key} = ${p.value}:`, err?.message || err);
+      }
+    }
+    return applied;
+  },
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Aksiyon: restoreQuoteEditLine — düzenlenen teklif satırının kayıtlı
+  // konfigürasyonunu konfigüratöre yükler.
+  //
+  //   1. Çalışma kopyasından satırı bul (yoksa intent düşürülür, normal mod).
+  //   2. Adet satırdan alınır.
+  //   3. Aynı article ise saklı OBX → importObx (en sadık yol).
+  //   4. `_pcon_full.properties` değerleri uygulanır — OBX yoksa fallback,
+  //      varsa farklı kalan değerler için doğrulama (eşleşiyorsa no-op).
+  // ────────────────────────────────────────────────────────────────────────
+  async restoreQuoteEditLine() {
+    const intent = getQuoteEditIntent();
+    if (!intent) {
+      set({ quoteEdit: null, restoring: false });
+      return false;
+    }
+
+    const line = getQuoteEditLine(intent);
+    if (!line) {
+      console.warn("[quote-edit] working copy / line not found — intent dropped");
+      clearQuoteEditIntent();
+      set({
+        quoteEdit: null,
+        restoring: false,
+        cartError:
+          "The quotation line to edit could not be found (your unsaved quotation copy may have expired). Please reopen the quotation and try again.",
+      });
+      return false;
+    }
+
+    const props = line.properties || {};
+    const full = parsePconFull(props);
+    const { articleNumber } = get();
+    const sameArticle =
+      !full?.articleNumber || !articleNumber || String(full.articleNumber) === String(articleNumber);
+    if (!sameArticle) {
+      console.warn(
+        `[quote-edit] line article (${full.articleNumber}) differs from page article (${articleNumber}) — OBX import skipped`,
+      );
+    }
+
+    set({
+      quoteEdit: intent,
+      quantity: Math.max(1, parseInt(line.quantity, 10) || 1),
+      restoring: true,
+      updating: true,
+      error: null,
+      cartError: null,
+    });
+
+    try {
+      let imported = false;
+      if (sameArticle && (props._obxFileId || props._obxURL)) {
+        imported = await importObxIntoScene({
+          customerId: getCustomerId(),
+          fileId: props._obxFileId || "",
+          url: props._obxURL || "",
+        });
+        if (imported) {
+          await get().reloadArticleState();
+        }
+      }
+
+      const snapshot = Array.isArray(full?.properties) ? full.properties : [];
+      const applied = await get().applySnapshotProperties(snapshot);
+      console.log(
+        `[quote-edit] line restored (obx: ${imported ? "yes" : "no"}, properties applied: ${applied})`,
+      );
+
+      if (!imported && !snapshot.length) {
+        set({
+          cartError:
+            "This line carries no stored configuration data; the product opened with its default configuration.",
+        });
+      }
+    } catch (err) {
+      console.warn("[quote-edit] restore failed:", err?.message || err);
+      set({ cartError: "The saved configuration could not be fully restored. Please review the selections before updating the quote line." });
+    } finally {
+      set({ restoring: false, updating: false });
+      try {
+        syncCurrentToUrl(get().properties);
+        _wcfArticleManager?.app?.viewer?.requestRenderFrame?.();
+      } catch {
+        /* viewer dispose edilmiş olabilir */
+      }
+    }
+    return true;
   },
 
   // ────────────────────────────────────────────────────────────────────────
@@ -1139,7 +1419,7 @@ const useConfiguratorStore = create((set, get) => ({
   },
 
   /**
-   * Cart-add akışı (iki dallı: normal ve preorder).
+   * Cart-add akışı (üç dallı: teklif satırı güncelleme, preorder, normal).
    *
    * Backend `/api/pcon/cart-payload` fresh OBX/attachment URL'leri üretir.
    * WCF ile itemId artık null — backend yeni EAIWS session açar ve current
@@ -1160,12 +1440,20 @@ const useConfiguratorStore = create((set, get) => ({
       cartLoading,
       updating,
       loading,
+      restoring,
       cartProperties,
       stool,
       productTitle,
+      productImageUrl,
+      productSku,
     } = get();
 
     if (cartLoading) return false;
+
+    if (restoring) {
+      set({ cartError: "The saved configuration is still being restored. Please wait." });
+      return false;
+    }
 
     if (loading || updating) {
       set({ cartError: "Configuration is still loading. Please wait." });
@@ -1245,6 +1533,55 @@ const useConfiguratorStore = create((set, get) => ({
     console.log("[cart] Shopify cart/add.js payload:", JSON.stringify({ items }, null, 2));
 
     try {
+      // ── Dal 1: Teklif satırı güncelleme (Edit Quote → "Edit configuration")
+      // Sepete DEĞİL, teklifin çalışma kopyasına yazılır; revizyon dealer
+      // modalda "SAVE REVISION" dediğinde tek seferde oluşur.
+      const quoteEditIntent = getQuoteEditIntent();
+      if (quoteEditIntent) {
+        const customerId = getCustomerId();
+
+        // pCon OBX linki kısa ömürlü ve bu satır sepete girmediği için
+        // storefront'un obx-capture.js'i onu göremez: hemen kopyalat ki
+        // "Download OBX" revizyon kaydedildikten sonra da çalışsın.
+        if (obxUrl) await captureObxUrl(customerId, obxUrl);
+
+        const numericParent = toNumericVariantId(variantId);
+        const pageUrl =
+          window.location.pathname + (numericParent ? "?variant=" + numericParent : "");
+        const lines = items.map((item, i) => {
+          const isParent = i === 0;
+          return {
+            variant_id: toNumericVariantId(item.id),
+            quantity: item.quantity,
+            properties: item.properties,
+            name: isParent
+              ? productTitle || articleNumber || ""
+              : stool?.title || "Included stool",
+            variantTitle:
+              !isParent && stoolLine ? `${stoolLine.material} / ${stoolLine.color}` : "",
+            image: isParent ? productImageUrl || null : null,
+            sku: isParent ? productSku || articleNumber || "" : "",
+            url: isParent ? pageUrl : null,
+          };
+        });
+
+        const session = replaceQuoteEditLine(quoteEditIntent, lines);
+        if (!session) {
+          window.alert(
+            "❌ Could not update the quotation line: the unsaved quotation copy was not found (it may have expired). Please reopen the quotation and try again.",
+          );
+          clearQuoteEditIntent();
+          set({ cartLoading: false, quoteEdit: null });
+          return false;
+        }
+
+        clearQuoteEditIntent();
+        set({ cartLoading: false, cartSuccess: true });
+        window.location.href = quoteEditReturnUrl(quoteEditIntent);
+        return true;
+      }
+
+      // ── Dal 2: Preorder
       const preorderIntent = getPreorderIntent();
 
       if (preorderIntent) {

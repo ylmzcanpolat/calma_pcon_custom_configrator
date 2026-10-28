@@ -40,6 +40,10 @@ export default function AddToCartButton({ isGuest = false }) {
   const updating = useConfiguratorStore((s) => s.updating);
   const loading = useConfiguratorStore((s) => s.loading);
   const addToCartLabel = useConfiguratorStore((s) => s.addToCartLabel);
+  // Teklif satırı düzenleme modu (Edit Quote → "Edit configuration"):
+  // tek buton "Update Quote Line"; sepet/teklif listesi aksiyonları gizlenir.
+  const quoteEdit = useConfiguratorStore((s) => s.quoteEdit);
+  const restoring = useConfiguratorStore((s) => s.restoring);
 
   // "Add to Request" için yerel loading state (Excel oluşturma sırasında)
   const [exporting, setExporting] = useState(false);
@@ -77,7 +81,7 @@ export default function AddToCartButton({ isGuest = false }) {
   }, [quoteSuccess, resetQuoteFeedback]);
 
   const disabled =
-    cartLoading || updating || loading || !cartProperties || !variantId;
+    cartLoading || updating || loading || restoring || !cartProperties || !variantId;
 
   const handleQuantityChange = (e) => {
     setQuantity(e.target.value);
@@ -94,7 +98,9 @@ export default function AddToCartButton({ isGuest = false }) {
   const handleAddToCart = async () => {
     if (disabled) return;
     const success = await addToCart("none");
-    if (success) {
+    // Teklif satırı güncellemesinde sepete bir şey eklenmez ve sayfa teklif
+    // modalına yönlenir — cart drawer açılmamalı.
+    if (success && !quoteEdit) {
       document.dispatchEvent(
         new CustomEvent("cart:refresh", { bubbles: true, detail: { open: true } }),
       );
@@ -158,8 +164,33 @@ export default function AddToCartButton({ isGuest = false }) {
         </div>
       </div>
 
-      {/* Dealer: iki buton yan yana */}
-      {!isGuest ? (
+      {/* Dealer, teklif satırı düzenleme modu: tek "Update Quote Line" butonu */}
+      {!isGuest && quoteEdit ? (
+        <div className="pcon-cart__btn-group">
+          <button
+            type="button"
+            className="pcon-cart__btn"
+            onClick={handleAddToCart}
+            disabled={disabled}
+            aria-busy={cartLoading || restoring}
+          >
+            {restoring ? (
+              <>
+                <span className="pcon-cart__btn-spinner" aria-hidden="true" />
+                <span>Restoring configuration...</span>
+              </>
+            ) : cartLoading ? (
+              <>
+                <span className="pcon-cart__btn-spinner" aria-hidden="true" />
+                <span>Updating...</span>
+              </>
+            ) : (
+              `Update Quote Line${quoteEdit.quoteNumber ? ` (${quoteEdit.quoteNumber})` : ""}`
+            )}
+          </button>
+        </div>
+      ) : !isGuest ? (
+        /* Dealer: iki buton yan yana */
         <div className="pcon-cart__btn-group">
           {/* <button
             type="button"
@@ -242,7 +273,7 @@ export default function AddToCartButton({ isGuest = false }) {
 
       {cartSuccess ? (
         <div className="pcon-cart__success" role="status">
-          Added to cart.
+          {quoteEdit ? "Quote line updated — returning to the quotation…" : "Added to cart."}
         </div>
       ) : null}
 
