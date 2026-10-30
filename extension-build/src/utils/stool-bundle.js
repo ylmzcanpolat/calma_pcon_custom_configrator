@@ -17,12 +17,12 @@ export const BUNDLE_ROLE_KEY = "_bundle_role";
 const STOOL_OPTION = { label: "STOOL OPTION" };
 const STOOL_YES = "YES";
 const MATERIAL_SOURCE = {
-  id: "[Character]NRUS_DOSEME_SERI_DUVAR",
-  label: "GROUP OF INTERIOR WALLS",
+  id: "[Character]NRUS_PG_SOFA",
+  label: "UPHOLSTERY GROUP",
 };
 const COLOR_SOURCE = {
-  id: "[Character]NRUS_DOSEME_RENK_DUVAR",
-  label: "COLOUR OF INTERIOR WALLS",
+  id: "[Character]NRUS_MAT_SOFA",
+  label: "FONT UPHOLSTERY SERIE",
 };
 const MATERIAL_OPTION = "Upholstery Material";
 const COLOR_OPTION = "Upholstery Color";
@@ -77,7 +77,7 @@ export function resolveStoolLine({ stool, properties }) {
   const color = selectedLabel(findProperty(properties, COLOR_SOURCE));
   if (!material || !color) {
     return {
-      error: "Please select the interior wall group and colour for the included stool.",
+      error: "Please select the upholstery group and upholstery serie for the included stool.",
     };
   }
 
